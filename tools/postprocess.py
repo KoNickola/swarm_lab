@@ -164,7 +164,9 @@ def _plot(
     speed_axes.set_ylabel("speed (m/s)")
     for axes_item in axes:
         axes_item.grid(True, linestyle="--", alpha=0.4)
-        axes_item.legend(loc="best")
+        handles, labels = axes_item.get_legend_handles_labels()
+        if handles:
+            axes_item.legend(handles, labels, loc="best")
     figure.tight_layout()
     figure.savefig(str(run_directory / "analysis.png"), dpi=160)
     plt.close(figure)
