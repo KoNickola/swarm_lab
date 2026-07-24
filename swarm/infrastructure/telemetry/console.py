@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from math import degrees
 from typing import Optional
 
 from swarm.domain.models import ControlFrame
+from swarm.infrastructure.telemetry.bearing_metrics import bearing_angle_error_rad
 
 
 class ConsoleTelemetrySink:
@@ -18,13 +20,29 @@ class ConsoleTelemetrySink:
         if self._next_output_time is not None and frame.monotonic_time < self._next_output_time:
             return
         self._next_output_time = frame.monotonic_time + self.interval
+        edge_errors_rad = [
+            angle
+            for sample in frame.planner.bearing_samples
+            for angle in (bearing_angle_error_rad(sample),)
+            if angle is not None
+        ]
+        mean_edge_error_deg = (
+            degrees(sum(edge_errors_rad) / len(edge_errors_rad))
+            if edge_errors_rad
+            else 0.0
+        )
+        max_edge_error_deg = (
+            degrees(max(edge_errors_rad)) if edge_errors_rad else 0.0
+        )
         print(
-            "control | t=%.3f ready=%s mean_error=%.4f max_error=%.4f dt=%.4f"
+            "control | t=%.3f ready=%s mean_edge_error_deg=%.3f "
+            "max_edge_error_deg=%.3f valid_edges=%d dt=%.4f"
             % (
                 frame.snapshot.timestamp,
                 frame.planner.ready,
-                frame.planner.mean_error,
-                frame.planner.max_error,
+                mean_edge_error_deg,
+                max_edge_error_deg,
+                len(edge_errors_rad),
                 frame.dt,
             )
         )
@@ -72,13 +90,21 @@ class ConsoleTelemetrySink:
                 )
             )
         for sample in frame.planner.bearing_samples:
+            angle_rad = bearing_angle_error_rad(sample)
+            angle_text = (
+                "%.3f" % degrees(angle_rad)
+                if angle_rad is not None
+                else "NA"
+            )
             print(
-                "bearing | %s->%s desired=(%.3f,%.3f,%.3f) actual=(%.3f,%.3f,%.3f)"
+                "bearing | %s->%s desired=(%.3f,%.3f,%.3f) "
+                "actual=(%.3f,%.3f,%.3f) error_deg=%s"
                 % (
                     sample.source_id,
                     sample.target_id,
                     *sample.desired,
                     *sample.actual,
+                    angle_text,
                 )
             )
 

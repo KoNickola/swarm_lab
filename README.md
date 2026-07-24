@@ -145,8 +145,21 @@ MPLBACKEND=TkAgg python3 run_experiment.py
 默认仅以 5 Hz 记录分析所需字段，而不是保存全部 50 Hz 控制数据。每次运行在 `runs/<实验名_时间>/` 生成：
 
 - `metadata.json`：实验配置和参数。
-- `trajectory.csv`：位置、速度、bearing 误差、控制量、四轮原始指令和发送状态。
-- `summary.json`：记录数量和总体 bearing 误差。
+- `trajectory.csv`：车辆位置、速度、控制量、四轮原始指令和发送状态。
+- `bearing_edges.csv`：每条有向拓扑边的期望/实际 bearing，以及三维夹角误差的弧度值和角度值。
+- `summary.json`：记录数量和逐边 bearing 角误差的总体均值、RMSE 与最大值。
+
+性能统计使用逐边 bearing 角误差：
+
+```text
+theta_ij = atan2(||g_ij_desired × g_ij_actual||,
+                 g_ij_desired · g_ij_actual)
+```
+
+其中 `theta_ij` 的范围为 `[0, pi]`。零长度实际 bearing 的角度没有定义，
+记录为无效边样本并从均值、RMSE 和最大值中排除。控制器仍使用原有的节点
+聚合 bearing 向量误差生成速度命令；逐边角误差只用于终端显示、数据记录和
+实验后处理。
 
 后处理命令：
 
@@ -156,8 +169,8 @@ python3 tools/postprocess.py runs/<运行目录>
 
 生成：
 
-- `analysis.json`：每辆车的路径长度、速度 RMSE、bearing 误差和发送成功率。
-- `analysis.png`：二维轨迹、bearing 误差和速度跟踪曲线。
+- `analysis.json`：每辆车的路径长度、速度 RMSE、发送成功率，以及每条有向边和全局的 bearing 角误差统计。
+- `analysis.png`：二维轨迹、逐边 bearing 角误差和速度跟踪曲线。
 
 ## 测试
 

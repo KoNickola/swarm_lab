@@ -41,7 +41,7 @@ def _build_telemetry(config: ExperimentConfig) -> CompositeTelemetrySink:
         sinks.append(ConsoleTelemetrySink(telemetry.console_hz))
     if telemetry.record_enabled:
         metadata: Dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "experiment": asdict(config),
         }
