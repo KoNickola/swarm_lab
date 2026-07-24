@@ -1,73 +1,104 @@
-# bearing_swarm_refactored
+# Swarm Lab
 
-## 项目概览
+面向地面车群的分层编队控制实验项目。当前实现以 bearing-only 编队控制为核心，支持 ROS/VRPN 动捕状态输入、人工势场速度过滤、地面车 PID 执行器、UDP 轮速指令下发，以及控制过程中的终端输出、实时轨迹窗口和实验数据记录。
 
-这是原 `bearing_swarm` 的分层重构版本，现位于 `semi-rigid/bearing_swarm_refactored`，与旧项目并列且独立运行。通用运行时代码使用 `swarm` 包名，可承载 bearing、boids 等多种算法。当前 bearing-only 编队误差计算、地面车速度/航向 PID、差速轮速分配和 UDP 报文格式保持原有逻辑；formation 与 APF 使用统一的全局目标速度上限。实验配置通过显式的 `algorithm` 字段选择编队算法。
-
-架构包含三类扩展点：
-
-- `SwarmPlanner`：bearing、boids 等算法实现相同的 `step(snapshot, dt)` 和 `reset()` 接口。
-- `VelocityCommandFilter`：在编队规划后、平台执行前修正目标速度；当前实现为可选的基础人工势场避障。
-- `VehicleActuator`：后续无人机执行器将速度命令转换为飞控命令，不影响编队算法和控制循环。
-
-## 架构与运行流程
+## 项目结构
 
 ```text
-ROS/VRPN StateSource
-        ↓
-    ControlLoop
-        ↓
- SwarmPlanner（由 CONFIG.algorithm 选择）
-        ↓
- VelocityCommandFilter（可选 APF）
-        ↓
- VehicleActuator（当前为地面车 PID + 差速控制）
-        ↓
- UDP Command Transport
-        ↓
- Console / Live Plot / CSV Recorder
+run_experiment.py                  # 实验入口
+configs/                           # 可切换的实验配置
+tools/postprocess.py               # 实验记录后处理
+tests/                             # 不依赖 ROS 和实车的单元测试
+swarm/
+  domain/                          # 数据模型与类型化配置
+  algorithms/                      # 编队、车辆控制、避障算法
+  application/                     # 控制循环、接口和 planner 工厂
+  infrastructure/                  # ROS、UDP、遥测和地面车适配器
 ```
 
-主要目录：
+一次控制周期的执行顺序为：
 
-- `swarm/domain`：跨层数据模型和类型化配置。
-- `swarm/algorithms`：PID、地面车控制和各类编队算法。
-- `swarm/application`：planner factory、接口与确定性的控制循环编排。
-- `swarm/infrastructure`：ROS、UDP、地面车执行器和遥测适配器。
-- `configs`：互相独立的实验配置。
-- `tools/postprocess.py`：实验后处理。
-- `tests`：算法特征测试和运行流程测试。
+```text
+ROS/VRPN 动捕状态
+  -> ControlLoop
+  -> SwarmPlanner，由 CONFIG.algorithm 选择
+  -> VelocityCommandFilter，可选人工势场避障
+  -> VehicleActuator，当前为地面车 PID + 差速轮速分配
+  -> UDP Command Transport
+  -> Console / Live Plot / CSV Recorder
+```
 
-每个有效控制周期严格按以下顺序执行：获取稳定动捕快照、检查状态、计算真实 `dt`、编队规划、速度过滤、平台控制、UDP 下发、遥测、补足控制周期。退出时始终发送停车命令并关闭遥测与 ROS 订阅。
+`ControlLoop` 保持与平台无关：状态源、编队规划器、速度过滤器、执行器和遥测输出都通过接口注入。新增编队算法或执行平台时，应优先扩展接口实现，而不是改动控制循环。
 
-## 当前实验配置
+## 当前能力
 
-实验配置统一采用 `<算法>_<名字或备注>.py` 命名，模块文件名、`CONFIG.name` 和 `CONFIG.algorithm` 前缀保持一致。当前配置为：
+- 编队算法：`bearing`。
+- 实验配置：两车、三车、四车、六车 bearing 编队。
+- 默认配置：`configs.bearing_three`。
+- 控制频率：默认 50 Hz。
+- 目标速度上限：默认 `0.30 m/s`，且不得超过地面车物理速度上限。
+- 遥测：终端输出 10 Hz，实时轨迹窗口 10 Hz，CSV 记录 5 Hz。
+- 避障：基础二维人工势场过滤器，可叠加静态圆形障碍物和其他车辆的排斥速度。
 
-- `configs/bearing_two.py`：两车 leader/follower 跟随。
-- `configs/bearing_three.py`：三车等腰直角三角形，当前车辆为 `car3`、`car5`、`car6`。
-- `configs/bearing_four.py`：双 leader 的四车正方形。
-- `configs/bearing_six.py`：六车柔性构型。
+## 环境要求
 
-命令行默认使用 `configs/bearing_three.py`。各构型及世界坐标轴示意图见 `configs/README.md`。切换同一算法的实验条件只需修改 `--config`，无需修改算法代码。
+运行实车实验需要：
 
-## 关键参数
+- Python 3
+- ROS1
+- `rospy`
+- `geometry_msgs`
+- VRPN 动捕话题，默认前缀为 `/vrpn_client_node`
+- Matplotlib，项目 `requirements.txt` 中列出
 
-参数集中在 `swarm/domain/config.py`，实验条件位于 `configs/`：
+安装 Python 依赖：
 
-- `ExperimentConfig.algorithm`：显式选择注册的编队算法，当前可用值为 `bearing`。
-- `FormationControlConfig`：`k_p`、`k_i`、积分限幅和单分量输出限幅。
-- `ObstacleAvoidanceConfig`：启用开关、车辆半径、障碍影响距离、排斥增益、最小计算距离和车间避障开关。
-- `StaticObstacleConfig`：静态圆形障碍物的编号、世界坐标中心和半径。
-- `GroundVehicleControlConfig`：航向/速度 PID、轨距、物理速度和轮速指令范围。
-- `RuntimeConfig`：统一目标速度上限、控制频率、动捕前缀、UDP 端口和动捕未准备时停车行为。
-- `TelemetryConfig`：终端、实时轨迹、记录频率和历史点数。
+```bash
+python3 -m pip install -r requirements.txt
+```
 
-默认终端输出和轨迹刷新均为 10 Hz，控制仍运行在 50 Hz。
+如果需要实时轨迹窗口，Linux/WSL 环境还需要可用的图形显示和交互式 Matplotlib backend。若提示 backend 为 `agg`，可安装 Tk 支持后指定 backend：
 
-## 编队算法选择与扩展
+```bash
+sudo apt install python3-tk
+MPLBACKEND=TkAgg python3 run_experiment.py
+```
 
-`swarm/application/planner_factory.py` 是算法选择入口。它根据 `CONFIG.algorithm` 查找构造函数；未注册名称会在 ROS、UDP 等外部资源启动前给出可用算法列表。当前配置显式写为：
+## 运行实验
+
+默认运行三车配置：
+
+```bash
+python3 run_experiment.py
+```
+
+切换配置：
+
+```bash
+python3 run_experiment.py --config bearing_two
+python3 run_experiment.py --config bearing_three
+python3 run_experiment.py --config bearing_four
+python3 run_experiment.py --config bearing_six
+```
+
+关闭部分遥测输出：
+
+```bash
+python3 run_experiment.py --no-plot
+python3 run_experiment.py --no-record
+```
+
+也可以传入完整模块名：
+
+```bash
+python3 run_experiment.py --config configs.bearing_six
+```
+
+程序启动后会先验证配置。若 `CONFIG.algorithm` 不受支持、车辆列表与拓扑维度不一致、leader 缺少目标速度、速度上限不合法或障碍物配置无效，会在连接外部资源前报错退出。
+
+## 实验配置
+
+配置文件位于 `configs/`，统一导出 `CONFIG: ExperimentConfig`。文件名、`CONFIG.name` 和 `CONFIG.algorithm` 前缀应保持一致，例如：
 
 ```python
 CONFIG = ExperimentConfig(
@@ -77,30 +108,41 @@ CONFIG = ExperimentConfig(
 )
 ```
 
-新增 boids 或其他算法时：
+当前配置：
 
-1. 在 `swarm/algorithms/` 新增实现，并实现 `SwarmPlanner` 的 `step(snapshot, dt)` 与 `reset()`。
-2. 在 `swarm/domain/config.py` 新增该算法的类型化参数；如果它不使用 bearing 拓扑，同时将算法专属字段和校验从通用配置中拆出。
-3. 在 `swarm/application/planner_factory.py` 增加构造函数，并把名称注册到 `_PLANNER_BUILDERS`。
-4. 新建如 `configs/boids_six.py` 的实验配置，保持 `name="boids_six"`、`algorithm="boids"` 与文件名一致。
-5. 为 planner 输出补充契约测试，确保每个车辆都有 `VelocityCommand`，并覆盖无效状态、速度限幅和内部状态重置。
+| 配置 | 车辆 | leader | 说明 | 避障 |
+| --- | --- | --- | --- | --- |
+| `bearing_two` | `car1`, `car2` | `car1` | 两车 leader/follower 跟随 | 关闭 |
+| `bearing_three` | `car3`, `car5`, `car6` | `car3` | 三车等腰直角三角形 | 开启 |
+| `bearing_four` | `car1` - `car4` | `car1`, `car2` | 四车正方形子构型 | 关闭 |
+| `bearing_six` | `car1` - `car6` | `car1`, `car2`, `car6` | 六车柔性构型 | 开启 |
 
-`ControlLoop`、APF 速度过滤器和地面车执行器均通过接口接收 planner 输出，新增编队算法时不需要修改这些组件。
+所有 bearing 都定义在动捕世界坐标系中。Bearing-only 控制约束相对方向和构型比例，不单独指定绝对平移、旋转和尺度。构型示意可参考 `configs/README.md`，实际有效边与方向以各配置文件中的 `topology` 为准。
 
-## 基础人工势场避障
+## 关键参数
 
-人工势场过滤器位于 `swarm/algorithms/obstacle_avoidance.py`。现有 bearing-only 输出作为目标速度，过滤器叠加静态圆形障碍物和其他有效车辆产生的二维排斥速度，再对平面速度统一限幅。实现不包含动态预测、安全状态机、切向力或局部极小值处理。
+核心配置定义在 `swarm/domain/config.py`：
 
-终端车辆状态同时显示 APF 前的 `formation` 速度、APF 后的 `apf_target` 速度以及两者之差 `apf_delta`，用于观察势场是否生效并调整排斥参数。
+- `ExperimentConfig.algorithm`：选择注册过的编队算法，当前支持 `bearing`。
+- `FormationControlConfig`：bearing 编队控制增益、积分限幅和输出限幅。
+- `ObstacleAvoidanceConfig`：避障启用开关、车辆半径、影响距离、排斥增益、最小计算距离和车辆间避障开关。
+- `StaticObstacleConfig`：静态圆形障碍物的 ID、世界坐标中心和半径。
+- `GroundVehicleControlConfig`：地面车轴距、物理速度上限、轮速指令范围、航向 PID 和速度 PID。
+- `RuntimeConfig`：控制频率、动捕前缀、UDP 端口、UDP 超时、动捕丢失停车策略和速度上限。
+- `TelemetryConfig`：终端、实时轨迹、记录频率、历史点数和记录目录。
 
-避障默认关闭。formation 和 APF 均使用 `RuntimeConfig.command_speed_limit_mps`，默认值为 `0.30 m/s`，且该值不能超过地面车物理速度上限。实验配置可按以下方式启用并定义障碍物：
+## 避障
+
+人工势场过滤器位于 `swarm/algorithms/obstacle_avoidance.py`。它接收 planner 输出的目标速度，叠加静态障碍物和其他有效车辆产生的二维排斥速度，再按 `RuntimeConfig.command_speed_limit_mps` 统一限幅。
+
+启用静态障碍物示例：
 
 ```python
 from swarm.domain.config import ObstacleAvoidanceConfig, StaticObstacleConfig
 
 CONFIG = ExperimentConfig(
     algorithm="bearing",
-    # 其余实验参数保持不变
+    # 其余实验参数
     obstacle_avoidance=ObstacleAvoidanceConfig(enabled=True),
     static_obstacles=(
         StaticObstacleConfig("obs1", x=1.0, y=0.5, radius_m=0.15),
@@ -108,58 +150,35 @@ CONFIG = ExperimentConfig(
 )
 ```
 
-所有障碍物坐标均使用动捕世界坐标系。基础人工势场可能出现局部极小值，且不提供形式化的无碰撞保证；实车测试应从低速开始。
+障碍物坐标使用动捕世界坐标系。当前人工势场实现不包含动态预测、安全状态机、切向力或局部极小值处理，不提供形式化无碰撞保证；实车测试应从低速和空旷场地开始。
 
-## 运行
+## 新增编队算法
 
-需要 ROS1、`rospy`、`geometry_msgs`、VRPN 动捕话题和 Matplotlib：
+`swarm/application/planner_factory.py` 是算法选择入口。新增算法的一般步骤：
 
-```bash
-cd bearing_swarm_refactored
-python3 run_experiment.py
-```
+1. 在 `swarm/algorithms/` 中实现新的 planner，并满足 `SwarmPlanner.step(snapshot, dt)` 与 `reset()` 接口。
+2. 如需专属参数，在 `swarm/domain/config.py` 增加类型化配置。
+3. 在 `planner_factory.py` 中添加构造函数，并注册到 `_PLANNER_BUILDERS`。
+4. 新增配置文件，例如 `configs/boids_six.py`，保持 `name="boids_six"`、`algorithm="boids"` 与文件名一致。
+5. 增加测试，覆盖命令输出完整性、无效状态、限幅和内部状态重置。
 
-常用选项：
+## 实验数据
 
-```bash
-python3 run_experiment.py --config bearing_six
-python3 run_experiment.py --config bearing_four
-python3 run_experiment.py --config bearing_three
-python3 run_experiment.py --no-plot
-python3 run_experiment.py --no-record
-```
+默认每次记录会在 `runs/<实验名>_<时间戳>/` 下生成：
 
-## 实时轨迹
+- `metadata.json`：实验配置和参数快照。
+- `trajectory.csv`：车辆位置、速度、目标速度、执行器控制量、轮速指令和发送状态。
+- `bearing_edges.csv`：每条有向 bearing 边的期望方向、实际方向、有效性和角误差。
+- `summary.json`：记录数量、有效 bearing 样本数、平均/RMS/最大 bearing 角误差。
 
-轨迹 GUI 使用非 daemon 独立进程，控制进程通过有界非阻塞队列发送位置。绘图进程启动后会明确输出所用 Matplotlib backend；GUI 初始化失败时会打印具体错误，控制循环仍可继续运行，不再静默无图。
-
-Linux/WSL 必须存在图形显示环境和交互式 Matplotlib backend。若提示 backend 为 `agg`，应安装 Tk 支持并在有 DISPLAY/WSLg 的终端运行，例如：
-
-```bash
-sudo apt install python3-tk
-MPLBACKEND=TkAgg python3 run_experiment.py
-```
-
-## 实验数据与后处理
-
-默认仅以 5 Hz 记录分析所需字段，而不是保存全部 50 Hz 控制数据。每次运行在 `runs/<实验名_时间>/` 生成：
-
-- `metadata.json`：实验配置和参数。
-- `trajectory.csv`：车辆位置、速度、控制量、四轮原始指令和发送状态。
-- `bearing_edges.csv`：每条有向拓扑边的期望/实际 bearing，以及三维夹角误差的弧度值和角度值。
-- `summary.json`：记录数量和逐边 bearing 角误差的总体均值、RMSE 与最大值。
-
-性能统计使用逐边 bearing 角误差：
+Bearing 角误差定义为有向边的三维夹角误差：
 
 ```text
-theta_ij = atan2(||g_ij_desired × g_ij_actual||,
-                 g_ij_desired · g_ij_actual)
+theta_ij = atan2(||g_ij_desired x g_ij_actual||,
+                 g_ij_desired . g_ij_actual)
 ```
 
-其中 `theta_ij` 的范围为 `[0, pi]`。零长度实际 bearing 的角度没有定义，
-记录为无效边样本并从均值、RMSE 和最大值中排除。控制器仍使用原有的节点
-聚合 bearing 向量误差生成速度命令；逐边角误差只用于终端显示、数据记录和
-实验后处理。
+零长度实际 bearing 没有定义，会记录为无效样本，并从均值、RMS 和最大值统计中排除。
 
 后处理命令：
 
@@ -167,9 +186,9 @@ theta_ij = atan2(||g_ij_desired × g_ij_actual||,
 python3 tools/postprocess.py runs/<运行目录>
 ```
 
-生成：
+生成产物：
 
-- `analysis.json`：每辆车的路径长度、速度 RMSE、发送成功率，以及每条有向边和全局的 bearing 角误差统计。
+- `analysis.json`：每辆车路径长度、速度 RMSE、发送成功率，以及逐边和全局 bearing 角误差统计。
 - `analysis.png`：二维轨迹、逐边 bearing 角误差和速度跟踪曲线。
 
 ## 测试
@@ -180,4 +199,4 @@ python3 tools/postprocess.py runs/<运行目录>
 python3 -m unittest discover -s tests -v
 ```
 
-任何安全策略、动捕超时、通信重试或控制公式调整都应作为独立行为变更处理，不能混入架构重构。
+建议在改动编队算法、避障策略、配置校验、动捕丢失行为、通信重试或控制公式后运行完整测试。
