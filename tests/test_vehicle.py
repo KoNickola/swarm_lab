@@ -175,6 +175,7 @@ class VehicleControllerSelectionTest(unittest.TestCase):
             "kd": 0.5,
             "integral_limit": 1.0,
             "output_limit": 0.3,
+            "integral_window_s": 1.0,
         })
         self.assertEqual(vars(config.mecanum_speed_pid), {
             "kp": 1.2,
@@ -182,6 +183,7 @@ class VehicleControllerSelectionTest(unittest.TestCase):
             "kd": 0.0,
             "integral_limit": 1.0,
             "output_limit": 0.3,
+            "integral_window_s": 1.0,
         })
         self.assertEqual(differential.speed_pid.kd, 0.5)
         self.assertEqual(mecanum.longitudinal_pid.kd, 0.0)

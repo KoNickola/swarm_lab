@@ -301,7 +301,9 @@ right_speed = speed_command + yaw_rate * track_width_m / 2
 `measured=(vx,vy,vz)` 均为世界坐标系速度。`speed=measured/target` 的两个
 标量在 `projected` 模式下是车体坐标系纵向速度：前者为
 `measured_forward`，后者为 `target_forward`，不是世界系平面速度模长。
-`measured_forward` 可以为负，`target_forward` 始终非负。终端不输出 APF
+`measured_forward` 可以为负，`target_forward` 始终非负。
+`speed_cmd_mps` 是底盘纵向控制输出，`angle_cmd_rps` 是差速/投影控制器
+用于左右轮差速的角速度命令；麦轮控制器当前令后者为零。终端不输出 APF
 速度增量。
 
 麦轮控制器接收世界坐标系平动目标 `(target_vx, target_vy, target_vz)`，根据
@@ -317,6 +319,9 @@ speed_pid = PIDConfig(1.2, 0.0, 0.5, 1.0, 0.3)
 mecanum_speed_pid = PIDConfig(1.5, 0.0, 0.0, 1.0, 0.3)
 projected_speed_pid = PIDConfig(1.0, 0.0, 0.0, 1.0, 0.3)
 ```
+
+`PIDConfig.integral_window_s` 设置标量 PID 的滑动积分窗口时长，默认 1 秒；
+积分只包含最近窗口内的误差面积，并继续受 `integral_limit` 约束。
 
 `speed_pid` 只供原差速控制器使用，麦轮纵向和横向 PID 只读取
 `mecanum_speed_pid`，投影控制器的前进纵向环只读取

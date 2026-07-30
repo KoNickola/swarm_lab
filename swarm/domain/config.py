@@ -16,6 +16,7 @@ class PIDConfig:
     kd: float
     integral_limit: float
     output_limit: Optional[float]
+    integral_window_s: float = 1.0
 
 
 VectorReferenceFunction = Callable[[float], Sequence[float]]
@@ -62,14 +63,15 @@ SUPPORTED_CONTROL_SPACES = (
 @dataclass(frozen=True)
 class FormationControlConfig:
     k_p: float = 1.2
-    k_i: float = 0.08
+    k_i: float = 0.5
     integral_limit: float = 0.4
+    integral_window_s: float = 2.0
     output_limit: float = 0.4
     leader_bearing_enabled: bool = False
     bearing_deadband_enabled: bool = False
     bearing_deadband_enter_deg: float = 1.5
     bearing_deadband_exit_deg: float = 3
-    integral_window_s: float = 1.0
+
 
 
 @dataclass(frozen=True)
@@ -119,7 +121,7 @@ class GroundVehicleControlConfig:
     projected_speed_pid: PIDConfig = field(
         default_factory=lambda: PIDConfig(1.2, 0.5, 0.0, 1.0, 0.3)
     )
-    projected_lookahead_m: float = 0.06
+    projected_lookahead_m: float = 0.03
     projected_max_yaw_rate_rps: float = 11.32
 
 
@@ -246,6 +248,7 @@ class ExperimentConfig:
             position_pid.ki,
             position_pid.kd,
             position_pid.integral_limit,
+            position_pid.integral_window_s,
         )
         if not all(isfinite(value) for value in position_pid_values):
             raise ValueError("leader position PID values must be finite")
@@ -254,6 +257,10 @@ class ExperimentConfig:
         if position_pid.integral_limit < 0.0:
             raise ValueError(
                 "leader position PID integral_limit must be non-negative"
+            )
+        if position_pid.integral_window_s <= 0.0:
+            raise ValueError(
+                "leader position PID integral_window_s must be positive"
             )
         if position_pid.output_limit is not None:
             raise ValueError(

@@ -101,7 +101,7 @@ class LeaderReferenceTest(unittest.TestCase):
         self.assertAlmostEqual(command.vy, 1.0)
         self.assertAlmostEqual(command.vz, 0.0)
 
-    def test_reset_clears_position_pid_integral(self) -> None:
+    def test_position_pid_uses_window_and_reset_clears_integral(self) -> None:
         planner = _single_leader_planner(
             TimePositionReference(lambda _elapsed_s: (1.0, 0.0)),
             position_pid=PIDConfig(0.0, 1.0, 0.0, 10.0, None),
@@ -114,7 +114,7 @@ class LeaderReferenceTest(unittest.TestCase):
         after_reset = planner.step(snapshot, 1.0).commands["leader"]
 
         self.assertAlmostEqual(first.vx, 1.0)
-        self.assertAlmostEqual(second.vx, 2.0)
+        self.assertAlmostEqual(second.vx, 1.0)
         self.assertAlmostEqual(after_reset.vx, 1.0)
 
     def test_static_xy_curve_combines_tangent_speed_and_position_pid(self) -> None:
@@ -197,8 +197,8 @@ class LeaderReferenceTest(unittest.TestCase):
 
         self.assertAlmostEqual(first.commands["leader_a"].vx, 1.0)
         self.assertAlmostEqual(first.commands["leader_b"].vx, 0.5)
-        self.assertAlmostEqual(second.commands["leader_a"].vx, 1.0)
-        self.assertAlmostEqual(second.commands["leader_b"].vx, 1.0)
+        self.assertAlmostEqual(second.commands["leader_a"].vx, 0.0)
+        self.assertAlmostEqual(second.commands["leader_b"].vx, 0.5)
         self.assertAlmostEqual(after_reset.commands["leader_a"].vx, 1.0)
         self.assertAlmostEqual(after_reset.commands["leader_b"].vx, 0.5)
 

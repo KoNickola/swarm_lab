@@ -63,7 +63,9 @@ class ConsoleTelemetrySink:
                 "vehicle | %s formation=(%.3f,%.3f,%.3f) "
                 "apf_target=(%.3f,%.3f,%.3f) "
                 "measured=(%.3f,%.3f,%.3f) "
-                "heading=%.3f/%.3f speed=%.3f/%.3f cmd=(%d,%d,%d,%d) sent=%s"
+                "heading=%.3f/%.3f speed=%.3f/%.3f "
+                "speed_cmd_mps=%.3f angle_cmd_rps=%.3f "
+                "cmd=(%d,%d,%d,%d) sent=%s"
                 % (
                     vehicle_id,
                     nominal_command.vx,
@@ -79,6 +81,8 @@ class ConsoleTelemetrySink:
                     values.get("target_heading", 0.0),
                     values.get("measured_speed", 0.0),
                     values.get("target_speed", 0.0),
+                    values.get("speed_mps", 0.0),
+                    values.get("steer_rad", 0.0),
                     int(values.get("front_left", 0.0)),
                     int(values.get("front_right", 0.0)),
                     int(values.get("rear_left", 0.0)),

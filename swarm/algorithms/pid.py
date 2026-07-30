@@ -9,7 +9,7 @@ VectorLike = Union[Sequence[float], Tuple[float, ...]]
 
 
 class PID:
-    """Stateful scalar PID controller."""
+    """Stateful scalar PID controller with a fixed-time integral window."""
 
     def __init__(
         self,
@@ -18,13 +18,20 @@ class PID:
         kd: float = 0.0,
         integral_limit: Optional[float] = None,
         output_limit: Optional[float] = None,
+        integral_window_s: float = 1.0,
     ) -> None:
+        if integral_window_s <= 0.0:
+            raise ValueError("integral_window_s must be positive")
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.integral_limit = integral_limit
         self.output_limit = output_limit
+        self.integral_window_s = integral_window_s
         self.integral = 0.0
+        self._integral_samples: Deque[Tuple[float, float]] = deque()
+        self._window_duration_s = 0.0
+        self._window_sum = 0.0
         self.prev_error = 0.0
         self.initialized = False
 
@@ -38,6 +45,9 @@ class PID:
 
     def reset(self) -> None:
         self.integral = 0.0
+        self._integral_samples.clear()
+        self._window_duration_s = 0.0
+        self._window_sum = 0.0
         self.prev_error = 0.0
         self.initialized = False
 
@@ -48,7 +58,31 @@ class PID:
         derivative = 0.0 if not self.initialized else (error - self.prev_error) / dt
         self.initialized = True
         self.prev_error = error
-        self.integral += error * dt
+        contribution = error * dt
+        self._integral_samples.append((dt, contribution))
+        self._window_duration_s += dt
+        self._window_sum += contribution
+        excess_s = self._window_duration_s - self.integral_window_s
+        while excess_s > 1e-12:
+            oldest_dt, oldest_contribution = self._integral_samples[0]
+            removed_dt = min(excess_s, oldest_dt)
+            removed_ratio = removed_dt / oldest_dt
+            self._window_sum -= oldest_contribution * removed_ratio
+            if removed_dt == oldest_dt:
+                self._integral_samples.popleft()
+            else:
+                remaining_ratio = 1.0 - removed_ratio
+                self._integral_samples[0] = (
+                    oldest_dt - removed_dt,
+                    oldest_contribution * remaining_ratio,
+                )
+            self._window_duration_s -= removed_dt
+            excess_s -= removed_dt
+        self._window_duration_s = min(
+            self._window_duration_s,
+            self.integral_window_s,
+        )
+        self.integral = self._window_sum
         if self.integral_limit is not None:
             self.integral = self._clamp(self.integral, -self.integral_limit, self.integral_limit)
         output = self.kp * error + self.ki * self.integral + self.kd * derivative

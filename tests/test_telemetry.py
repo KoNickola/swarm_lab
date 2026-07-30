@@ -90,6 +90,8 @@ class TelemetryTest(unittest.TestCase):
         self.assertIn("formation=(0.050,0.000,0.000)", text)
         self.assertIn("apf_target=(0.100,0.000,0.000)", text)
         self.assertNotIn("apf_delta=", text)
+        self.assertIn("speed_cmd_mps=0.020", text)
+        self.assertIn("angle_cmd_rps=0.000", text)
 
     def test_recorder_samples_five_hz_from_fifty_hz_frames(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

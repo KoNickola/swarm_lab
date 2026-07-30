@@ -84,11 +84,11 @@ CONFIG = ExperimentConfig(
         leader_mask=(True, True, False, False, False, True),
     ),
     leader_target_velocities={
-        # "car1": (-0.2, 0.0, 0.0),
-        "car1": TimePositionReference(car1_target_position),
+        "car1": (-0.15, 0.0, 0.0),
+        # "car1": TimePositionReference(car1_target_position),
         # "car2": TimeVelocityReference(car2_time_velocity),
         # "car6": TimeVelocityReference(car6_time_velocity),
-        "car2": (0.0, 0.0, 0.0),
+        "car2": (-0.15, 0.0, 0.0),
         "car6": (0.0, 0.0, 0.0)
     },
     obstacle_avoidance=ObstacleAvoidanceConfig(enabled=True),

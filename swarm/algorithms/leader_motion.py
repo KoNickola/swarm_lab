@@ -53,6 +53,7 @@ class LeaderReferenceController:
             kd=self.position_pid.kd,
             integral_limit=self.position_pid.integral_limit,
             output_limit=None,
+            integral_window_s=self.position_pid.integral_window_s,
         )
 
     @staticmethod
