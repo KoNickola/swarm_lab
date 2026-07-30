@@ -27,6 +27,7 @@ def _build_bearing_planner(config: ExperimentConfig) -> SwarmPlanner:
         leader_target_velocities=config.leader_target_velocities,
         control=config.formation_control,
         command_speed_limit_mps=config.runtime.command_speed_limit_mps,
+        leader_position_pid=config.leader_position_pid,
     )
 
 

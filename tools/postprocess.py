@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate compact metrics and plots from one recorded experiment run."""
+"""Generate maximum-error and terminal steady-state experiment metrics."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import argparse
 import csv
 import json
 from collections import defaultdict
-from math import degrees, hypot, isfinite, sqrt
+from math import ceil, degrees, hypot, isfinite, sqrt
 from pathlib import Path
 from typing import DefaultDict, Dict, List, Optional, Tuple
 
@@ -15,16 +15,38 @@ from typing import DefaultDict, Dict, List, Optional, Tuple
 EdgeKey = Tuple[str, str]
 VehicleRows = DefaultDict[str, List[Dict[str, float]]]
 BearingEdgeRows = DefaultDict[EdgeKey, List[Dict[str, float]]]
+SeriesPoint = Tuple[float, Optional[float]]
+
+
+def _percentage(value: str) -> float:
+    number = float(value)
+    if number <= 0.0 or number > 100.0:
+        raise argparse.ArgumentTypeError("percentage must be in (0, 100]")
+    return number
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Post-process vehicle trajectories and directed-edge bearing errors"
+        description=(
+            "Post-process vehicle trajectories and directed-edge bearing errors"
+        )
     )
     parser.add_argument(
         "run_directory",
         type=Path,
         help="directory containing trajectory.csv and bearing_edges.csv",
+    )
+    parser.add_argument(
+        "--steady-tail-percent",
+        type=_percentage,
+        default=20.0,
+        help="data percentage used to estimate steady error, default: 20",
+    )
+    parser.add_argument(
+        "--steady-tolerance-percent",
+        type=_percentage,
+        default=5.0,
+        help="relative steady-error band, default: 5",
     )
     return parser.parse_args()
 
@@ -34,7 +56,11 @@ def _read_rows(path: Path) -> VehicleRows:
     with path.open("r", newline="", encoding="utf-8") as source:
         for raw in csv.DictReader(source):
             vehicle_id = raw.pop("vehicle_id")
-            vehicles[vehicle_id].append({key: float(value) for key, value in raw.items()})
+            vehicles[vehicle_id].append(
+                {key: float(value) for key, value in raw.items()}
+            )
+    for rows in vehicles.values():
+        rows.sort(key=lambda row: row["time_s"])
     return vehicles
 
 
@@ -52,139 +78,504 @@ def _read_bearing_rows(path: Path) -> BearingEdgeRows:
                     for key, value in raw.items()
                 }
             )
+    for rows in edges.values():
+        rows.sort(key=lambda row: row["time_s"])
     return edges
 
 
-def _angle_statistics(rows: List[Dict[str, float]]) -> Dict[str, object]:
-    angles_rad = [
-        row["bearing_error_rad"]
-        for row in rows
-        if row.get("bearing_valid", 0.0) == 1.0
-        and isfinite(row["bearing_error_rad"])
-    ]
-    if angles_rad:
-        mean_rad: Optional[float] = sum(angles_rad) / len(angles_rad)
-        rms_rad: Optional[float] = sqrt(
-            sum(angle * angle for angle in angles_rad) / len(angles_rad)
+def _valid_angle_rad(row: Dict[str, float]) -> Optional[float]:
+    angle_rad = row.get("bearing_error_rad", float("nan"))
+    if row.get("bearing_valid", 0.0) != 1.0 or not isfinite(angle_rad):
+        return None
+    return angle_rad
+
+
+def _bearing_frames(
+    bearing_edges: BearingEdgeRows,
+) -> List[Dict[str, object]]:
+    """Align all observed edges and calculate the complete-frame L2 error."""
+
+    expected_edges = tuple(sorted(bearing_edges))
+    rows_by_time: DefaultDict[
+        float,
+        Dict[EdgeKey, Dict[str, float]],
+    ] = defaultdict(dict)
+    for edge, rows in bearing_edges.items():
+        for row in rows:
+            rows_by_time[row["time_s"]][edge] = row
+
+    frames: List[Dict[str, object]] = []
+    for time_s, edge_rows in sorted(rows_by_time.items()):
+        edge_errors: Dict[EdgeKey, Optional[float]] = {}
+        for edge in expected_edges:
+            row = edge_rows.get(edge)
+            edge_errors[edge] = (
+                _valid_angle_rad(row) if row is not None else None
+            )
+        complete = bool(expected_edges) and all(
+            edge_errors[edge] is not None for edge in expected_edges
         )
-        max_rad: Optional[float] = max(angles_rad)
-    else:
-        mean_rad = None
-        rms_rad = None
-        max_rad = None
+        error_l2_rad = (
+            sqrt(
+                sum(
+                    float(edge_errors[edge]) ** 2
+                    for edge in expected_edges
+                )
+            )
+            if complete
+            else None
+        )
+        frames.append(
+            {
+                "time_s": time_s,
+                "edge_errors_rad": edge_errors,
+                "complete": complete,
+                "error_l2_rad": error_l2_rad,
+            }
+        )
+    return frames
+
+
+def _edge_series(
+    frames: List[Dict[str, object]],
+    edge: EdgeKey,
+) -> List[SeriesPoint]:
+    points: List[SeriesPoint] = []
+    for frame in frames:
+        edge_errors = frame["edge_errors_rad"]
+        if not isinstance(edge_errors, dict):
+            continue
+        value = edge_errors.get(edge)
+        points.append(
+            (
+                float(frame["time_s"]),
+                float(value) if value is not None else None,
+            )
+        )
+    return points
+
+
+def _global_series(frames: List[Dict[str, object]]) -> List[SeriesPoint]:
+    return [
+        (
+            float(frame["time_s"]),
+            (
+                float(frame["error_l2_rad"])
+                if frame["error_l2_rad"] is not None
+                else None
+            ),
+        )
+        for frame in frames
+    ]
+
+
+def _empty_steady_state(reason: str) -> Dict[str, object]:
     return {
-        "samples": len(rows),
-        "valid_samples": len(angles_rad),
-        "invalid_samples": len(rows) - len(angles_rad),
-        "mean_error_rad": mean_rad,
-        "rms_error_rad": rms_rad,
-        "max_error_rad": max_rad,
-        "mean_error_deg": degrees(mean_rad) if mean_rad is not None else None,
-        "rms_error_deg": degrees(rms_rad) if rms_rad is not None else None,
-        "max_error_deg": degrees(max_rad) if max_rad is not None else None,
+        "available": False,
+        "reason": reason,
+        "tail_samples": 0,
+        "tail_valid_samples": 0,
+        "estimated_steady_error_deg": None,
+        "convergence_time_s": None,
+        "end_time_s": None,
+        "duration_s": 0.0,
+        "steady_samples": 0,
+        "steady_mean_error_deg": None,
+        "steady_rms_error_deg": None,
+    }
+
+
+def _steady_state(
+    points: List[SeriesPoint],
+    tail_fraction: float,
+    tolerance_fraction: float,
+) -> Dict[str, object]:
+    """Estimate a tail error and analyze the final contiguous in-band region."""
+
+    if not points:
+        return _empty_steady_state("no_samples")
+
+    tail_count = max(1, int(ceil(len(points) * tail_fraction)))
+    tail_points = points[-tail_count:]
+    tail_values = [
+        value for _, value in tail_points if value is not None
+    ]
+    result = _empty_steady_state("no_valid_tail_samples")
+    result["tail_samples"] = len(tail_points)
+    result["tail_valid_samples"] = len(tail_values)
+    result["end_time_s"] = points[-1][0]
+    if not tail_values:
+        return result
+
+    estimate_rad = sum(tail_values) / len(tail_values)
+    tolerance_rad = abs(estimate_rad) * tolerance_fraction
+    lower_bound_rad = max(0.0, estimate_rad - tolerance_rad)
+    upper_bound_rad = estimate_rad + tolerance_rad
+    result.update(
+        {
+            "estimated_steady_error_deg": degrees(estimate_rad),
+        }
+    )
+
+    final_value = points[-1][1]
+    if final_value is None:
+        result["reason"] = "final_sample_invalid"
+        return result
+    if not lower_bound_rad <= final_value <= upper_bound_rad:
+        result["reason"] = "final_sample_outside_band"
+        return result
+
+    steady_start_index = len(points) - 1
+    while steady_start_index > 0:
+        previous_value = points[steady_start_index - 1][1]
+        if (
+            previous_value is None
+            or previous_value < lower_bound_rad
+            or previous_value > upper_bound_rad
+        ):
+            break
+        steady_start_index -= 1
+
+    steady_points = points[steady_start_index:]
+    steady_values = [
+        float(value)
+        for _, value in steady_points
+        if value is not None
+    ]
+    steady_mean_rad = sum(steady_values) / len(steady_values)
+    steady_rms_rad = sqrt(
+        sum(value * value for value in steady_values)
+        / len(steady_values)
+    )
+    convergence_time_s = steady_points[0][0]
+    end_time_s = steady_points[-1][0]
+    result.update(
+        {
+            "available": True,
+            "reason": None,
+            "convergence_time_s": convergence_time_s,
+            "end_time_s": end_time_s,
+            "duration_s": max(0.0, end_time_s - convergence_time_s),
+            "steady_samples": len(steady_values),
+            "steady_mean_error_deg": degrees(steady_mean_rad),
+            "steady_rms_error_deg": degrees(steady_rms_rad),
+        }
+    )
+    return result
+
+
+def _error_metrics(
+    points: List[SeriesPoint],
+    tail_fraction: float,
+    tolerance_fraction: float,
+) -> Dict[str, object]:
+    valid_values = [
+        value for _, value in points if value is not None
+    ]
+    max_error_rad = max(valid_values) if valid_values else None
+    return {
+        "observed_frames": len(points),
+        "valid_samples": len(valid_values),
+        "invalid_or_missing_samples": len(points) - len(valid_values),
+        "max_error_deg": (
+            degrees(max_error_rad) if max_error_rad is not None else None
+        ),
+        "steady_state": _steady_state(
+            points,
+            tail_fraction,
+            tolerance_fraction,
+        ),
+    }
+
+
+def _frame_quality(
+    frames: List[Dict[str, object]],
+    expected_edge_count: int,
+) -> Dict[str, object]:
+    complete_frames = sum(bool(frame["complete"]) for frame in frames)
+    gaps = [
+        float(current["time_s"]) - float(previous["time_s"])
+        for previous, current in zip(frames, frames[1:])
+        if float(current["time_s"]) > float(previous["time_s"])
+    ]
+    return {
+        "expected_edges": expected_edge_count,
+        "observed_frames": len(frames),
+        "complete_frames": complete_frames,
+        "complete_frame_rate": (
+            complete_frames / len(frames) if frames else None
+        ),
+        "maximum_observed_gap_s": max(gaps) if gaps else None,
     }
 
 
 def _metrics(
     vehicles: VehicleRows,
     bearing_edges: Optional[BearingEdgeRows] = None,
+    steady_tail_fraction: float = 0.20,
+    steady_tolerance_fraction: float = 0.05,
 ) -> Dict[str, object]:
+    if not 0.0 < steady_tail_fraction <= 1.0:
+        raise ValueError("steady_tail_fraction must be in (0, 1]")
+    if not 0.0 < steady_tolerance_fraction <= 1.0:
+        raise ValueError("steady_tolerance_fraction must be in (0, 1]")
+
     result: Dict[str, object] = {
         "bearing_error_metric": "directed_edge_angular_error_3d",
+        "global_error_metric": "l2_norm_of_complete_directed_edge_errors",
+        "steady_state_method": {
+            "tail_percent": steady_tail_fraction * 100.0,
+            "estimator": "arithmetic_mean_of_valid_tail_samples",
+            "tolerance_percent": steady_tolerance_fraction * 100.0,
+            "interval": (
+                "final_contiguous_recorded_samples_within_relative_band"
+            ),
+        },
         "vehicles": {},
+        "bearing_global": {},
         "bearing_edges": {},
     }
+
     vehicle_metrics: Dict[str, object] = result["vehicles"]  # type: ignore
-    for vehicle_id, rows in vehicles.items():
+    for vehicle_id, rows in sorted(vehicles.items()):
         path_length = sum(
-            hypot(current["x_m"] - previous["x_m"], current["y_m"] - previous["y_m"])
+            hypot(
+                current["x_m"] - previous["x_m"],
+                current["y_m"] - previous["y_m"],
+            )
             for previous, current in zip(rows, rows[1:])
         )
-        speed_error_sq = [
-            (row["target_speed_mps"] - row["measured_speed_mps"]) ** 2 for row in rows
+        speed_errors = [
+            abs(row["target_speed_mps"] - row["measured_speed_mps"])
+            for row in rows
         ]
         vehicle_metrics[vehicle_id] = {
             "samples": len(rows),
-            "duration_s": rows[-1]["time_s"] - rows[0]["time_s"] if len(rows) > 1 else 0.0,
+            "duration_s": (
+                rows[-1]["time_s"] - rows[0]["time_s"]
+                if len(rows) > 1
+                else 0.0
+            ),
             "path_length_m": path_length,
-            "speed_rmse_mps": sqrt(sum(speed_error_sq) / len(speed_error_sq)) if speed_error_sq else 0.0,
+            "max_speed_error_mps": (
+                max(speed_errors) if speed_errors else None
+            ),
             "send_success_rate": (
-                sum(row["command_sent"] for row in rows) / len(rows) if rows else 0.0
+                sum(row["command_sent"] for row in rows) / len(rows)
+                if rows
+                else None
             ),
         }
+
     edge_rows = bearing_edges or defaultdict(list)
+    frames = _bearing_frames(edge_rows)
+    result["bearing_global"] = _error_metrics(
+        _global_series(frames),
+        steady_tail_fraction,
+        steady_tolerance_fraction,
+    )
+
     edge_metrics: Dict[str, object] = result["bearing_edges"]  # type: ignore
-    all_rows: List[Dict[str, float]] = []
-    for (source_id, target_id), rows in sorted(edge_rows.items()):
-        edge_metrics[source_id + "->" + target_id] = _angle_statistics(rows)
-        all_rows.extend(rows)
-    result["bearing_global"] = _angle_statistics(all_rows)
+    for edge in sorted(edge_rows):
+        source_id, target_id = edge
+        edge_metrics[source_id + "->" + target_id] = _error_metrics(
+            _edge_series(frames, edge),
+            steady_tail_fraction,
+            steady_tolerance_fraction,
+        )
+
+    result["frame_quality"] = _frame_quality(frames, len(edge_rows))
     return result
+
+
+def _edges_by_source(
+    bearing_edges: BearingEdgeRows,
+) -> Dict[str, List[Tuple[str, List[Dict[str, float]]]]]:
+    """Group directed edges by their source vehicle for plotting."""
+
+    grouped: DefaultDict[
+        str,
+        List[Tuple[str, List[Dict[str, float]]]],
+    ] = defaultdict(list)
+    for (source_id, target_id), rows in sorted(bearing_edges.items()):
+        grouped[source_id].append((target_id, rows))
+    return dict(grouped)
 
 
 def _plot(
     run_directory: Path,
     vehicles: VehicleRows,
     bearing_edges: Optional[BearingEdgeRows] = None,
+    analysis: Optional[Dict[str, object]] = None,
 ) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    figure, axes = plt.subplots(1, 3, figsize=(16, 5))
-    trajectory_axes, error_axes, speed_axes = axes
-    for vehicle_id, rows in vehicles.items():
-        times = [row["time_s"] for row in rows]
+    edge_rows = bearing_edges or defaultdict(list)
+    grouped_edges = _edges_by_source(edge_rows)
+    panel_count = 2 + len(grouped_edges)
+    column_count = 2
+    row_count = int(ceil(panel_count / column_count))
+    figure, axes_grid = plt.subplots(
+        row_count,
+        column_count,
+        figsize=(16, 4.5 * row_count),
+        squeeze=False,
+    )
+    axes = [axes_item for row in axes_grid for axes_item in row]
+    trajectory_axes = axes[0]
+    global_error_axes = axes[1]
+
+    for vehicle_id, rows in sorted(vehicles.items()):
         trajectory_axes.plot(
             [row["x_m"] for row in rows],
             [row["y_m"] for row in rows],
             label=vehicle_id,
         )
-        speed_axes.plot(times, [row["measured_speed_mps"] for row in rows], label=vehicle_id + " actual")
-        speed_axes.plot(
-            times,
-            [row["target_speed_mps"] for row in rows],
-            linestyle="--",
-            label=vehicle_id + " target",
+
+    for axes_index, (source_id, outgoing_edges) in enumerate(
+        sorted(grouped_edges.items()),
+        start=2,
+    ):
+        edge_axes = axes[axes_index]
+        for target_id, rows in outgoing_edges:
+            edge_axes.plot(
+                [row["time_s"] for row in rows],
+                [
+                    (
+                        degrees(angle_rad)
+                        if angle_rad is not None
+                        else float("nan")
+                    )
+                    for row in rows
+                    for angle_rad in (_valid_angle_rad(row),)
+                ],
+                label=source_id + "->" + target_id,
+            )
+        edge_axes.set_title(source_id + " outgoing bearing errors")
+        edge_axes.set_xlabel("time (s)")
+        edge_axes.set_ylabel("error (deg)")
+        edge_axes.set_ylim(bottom=0.0)
+
+    frames = _bearing_frames(edge_rows)
+    global_points = _global_series(frames)
+    valid_global_points = [
+        (time_s, error_rad)
+        for time_s, error_rad in global_points
+        if error_rad is not None
+    ]
+    if valid_global_points:
+        global_error_axes.plot(
+            [time_s for time_s, _ in valid_global_points],
+            [degrees(float(value)) for _, value in valid_global_points],
+            color="black",
+            linewidth=2.0,
+            label="global edge L2",
         )
-    edge_rows = bearing_edges or defaultdict(list)
-    for (source_id, target_id), rows in sorted(edge_rows.items()):
-        error_axes.plot(
-            [row["time_s"] for row in rows],
-            [row["bearing_error_deg"] for row in rows],
-            label=source_id + "->" + target_id,
-        )
+
+    if analysis is not None:
+        global_metrics = analysis.get("bearing_global", {})
+        if isinstance(global_metrics, dict):
+            steady = global_metrics.get("steady_state", {})
+            if isinstance(steady, dict):
+                estimate_deg = steady.get("estimated_steady_error_deg")
+                method = analysis.get("steady_state_method", {})
+                tolerance_percent = (
+                    method.get("tolerance_percent")
+                    if isinstance(method, dict)
+                    else None
+                )
+                if isinstance(estimate_deg, (int, float)):
+                    global_error_axes.axhline(
+                        estimate_deg,
+                        color="black",
+                        linestyle=":",
+                        linewidth=1.2,
+                        label="global steady estimate",
+                    )
+                if isinstance(estimate_deg, (int, float)) and isinstance(
+                    tolerance_percent,
+                    (int, float),
+                ):
+                    tolerance_fraction = tolerance_percent / 100.0
+                    lower_deg = max(
+                        0.0,
+                        estimate_deg * (1.0 - tolerance_fraction),
+                    )
+                    upper_deg = estimate_deg * (
+                        1.0 + tolerance_fraction
+                    )
+                    global_error_axes.axhspan(
+                        lower_deg,
+                        upper_deg,
+                        color="green",
+                        alpha=0.08,
+                        label="global steady tolerance band",
+                    )
+                if steady.get("available"):
+                    start_time_s = steady.get("convergence_time_s")
+                    end_time_s = steady.get("end_time_s")
+                    if isinstance(start_time_s, (int, float)) and isinstance(
+                        end_time_s,
+                        (int, float),
+                    ):
+                        global_error_axes.axvspan(
+                            start_time_s,
+                            end_time_s,
+                            color="blue",
+                            alpha=0.06,
+                            label="global steady interval",
+                        )
+
     trajectory_axes.set_title("2D trajectory")
     trajectory_axes.set_xlabel("x (m)")
     trajectory_axes.set_ylabel("y (m)")
     trajectory_axes.set_aspect("equal", adjustable="datalim")
-    error_axes.set_title("Directed-edge bearing angle error")
-    error_axes.set_xlabel("time (s)")
-    error_axes.set_ylabel("error (deg)")
-    speed_axes.set_title("Speed tracking")
-    speed_axes.set_xlabel("time (s)")
-    speed_axes.set_ylabel("speed (m/s)")
-    for axes_item in axes:
+    global_error_axes.set_title("Global L2 bearing error")
+    global_error_axes.set_xlabel("time (s)")
+    global_error_axes.set_ylabel("error (deg)")
+    global_error_axes.set_ylim(bottom=0.0)
+
+    for axes_item in axes[:panel_count]:
         axes_item.grid(True, linestyle="--", alpha=0.4)
         handles, labels = axes_item.get_legend_handles_labels()
         if handles:
             axes_item.legend(handles, labels, loc="best")
+    for axes_item in axes[panel_count:]:
+        axes_item.set_visible(False)
     figure.tight_layout()
     figure.savefig(str(run_directory / "analysis.png"), dpi=160)
     plt.close(figure)
 
 
 def main() -> None:
-    run_directory = _parse_args().run_directory.resolve()
+    args = _parse_args()
+    run_directory = args.run_directory.resolve()
     csv_path = run_directory / "trajectory.csv"
     if not csv_path.is_file():
         raise FileNotFoundError(csv_path)
     vehicles = _read_rows(csv_path)
     if not vehicles:
         raise ValueError("trajectory.csv contains no vehicle samples")
-    bearing_edges = _read_bearing_rows(run_directory / "bearing_edges.csv")
-    metrics = _metrics(vehicles, bearing_edges)
-    with (run_directory / "analysis.json").open("w", encoding="utf-8") as output:
+    bearing_edges = _read_bearing_rows(
+        run_directory / "bearing_edges.csv"
+    )
+    metrics = _metrics(
+        vehicles,
+        bearing_edges,
+        steady_tail_fraction=args.steady_tail_percent / 100.0,
+        steady_tolerance_fraction=(
+            args.steady_tolerance_percent / 100.0
+        ),
+    )
+    with (run_directory / "analysis.json").open(
+        "w",
+        encoding="utf-8",
+    ) as output:
         json.dump(metrics, output, indent=2, ensure_ascii=False)
-    _plot(run_directory, vehicles, bearing_edges)
+    _plot(run_directory, vehicles, bearing_edges, metrics)
     print("analysis | %s" % run_directory)
 
 

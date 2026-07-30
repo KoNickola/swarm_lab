@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from swarm.algorithms.obstacle_avoidance import ArtificialPotentialField
-from swarm.algorithms.vehicle import VehicleController
+from swarm.algorithms.vehicle import build_vehicle_controller
 from swarm.application.control_loop import ControlLoop
 from swarm.application.interfaces import TelemetrySink
 from swarm.application.planner_factory import build_swarm_planner
@@ -34,6 +34,20 @@ def _run_directory(root: str, experiment_name: str) -> Path:
     return root_path / (experiment_name + "_" + timestamp)
 
 
+def _metadata_value(value: Any) -> Any:
+    """Convert callable configuration values into stable JSON metadata."""
+
+    if callable(value):
+        module = getattr(value, "__module__", "")
+        qualified_name = getattr(value, "__qualname__", getattr(value, "__name__", "callable"))
+        return "%s.%s" % (module, qualified_name) if module else qualified_name
+    if isinstance(value, Mapping):
+        return {str(key): _metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_metadata_value(item) for item in value]
+    return value
+
+
 def _build_telemetry(config: ExperimentConfig) -> CompositeTelemetrySink:
     telemetry = config.runtime.telemetry
     sinks: List[TelemetrySink] = []
@@ -43,7 +57,7 @@ def _build_telemetry(config: ExperimentConfig) -> CompositeTelemetrySink:
         metadata: Dict[str, Any] = {
             "schema_version": 2,
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "experiment": asdict(config),
+            "experiment": _metadata_value(asdict(config)),
         }
         recorder = ExperimentRecorder(
             run_directory=_run_directory(telemetry.record_root, config.name),
@@ -90,7 +104,7 @@ def build_control_loop(config: ExperimentConfig) -> ControlLoop:
             raise ValueError("no actuator factory registered for platform: %s" % vehicle.platform)
         actuators[vehicle.vehicle_id] = GroundVehicleActuator(
             vehicle_id=vehicle.vehicle_id,
-            controller=VehicleController(config.ground_vehicle_control),
+            controller=build_vehicle_controller(config.ground_vehicle_control),
             driver=ChassisSocketDriver(vehicle.address, socket_config),
         )
     return ControlLoop(
@@ -102,4 +116,5 @@ def build_control_loop(config: ExperimentConfig) -> ControlLoop:
         telemetry=_build_telemetry(config),
         shutdown_requested=rospy.is_shutdown,
         velocity_filter=velocity_filter,
+        control_space=config.control_space,
     )

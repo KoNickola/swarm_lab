@@ -61,7 +61,7 @@ class ConsoleTelemetrySink:
             values = actuation.values
             print(
                 "vehicle | %s formation=(%.3f,%.3f,%.3f) "
-                "apf_target=(%.3f,%.3f,%.3f) apf_delta=(%.3f,%.3f,%.3f) "
+                "apf_target=(%.3f,%.3f,%.3f) "
                 "measured=(%.3f,%.3f,%.3f) "
                 "heading=%.3f/%.3f speed=%.3f/%.3f cmd=(%d,%d,%d,%d) sent=%s"
                 % (
@@ -72,9 +72,6 @@ class ConsoleTelemetrySink:
                     planner_command.vx,
                     planner_command.vy,
                     planner_command.vz,
-                    planner_command.vx - nominal_command.vx,
-                    planner_command.vy - nominal_command.vy,
-                    planner_command.vz - nominal_command.vz,
                     state.vx,
                     state.vy,
                     state.vz,

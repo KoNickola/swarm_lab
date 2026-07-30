@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from swarm.algorithms.vehicle import VehicleController
+from swarm.algorithms.vehicle import VehicleControllerType
 from swarm.domain.models import ActuationResult, VehicleState, VelocityCommand
 from swarm.infrastructure.udp_chassis import ChassisSocketDriver
 
@@ -15,7 +15,7 @@ class GroundVehicleActuator:
     def __init__(
         self,
         vehicle_id: str,
-        controller: VehicleController,
+        controller: VehicleControllerType,
         driver: ChassisSocketDriver,
     ) -> None:
         self.vehicle_id = vehicle_id
@@ -42,4 +42,4 @@ class GroundVehicleActuator:
         return ActuationResult(self.vehicle_id, self.platform, values, sent)
 
     def stop(self) -> bool:
-        return self.driver.send(VehicleController.stop_command())
+        return self.driver.send(self.controller.stop_command())

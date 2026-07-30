@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from math import pi
 from pathlib import Path
 import tempfile
@@ -98,13 +97,7 @@ class BearingMetricsTest(unittest.TestCase):
                 encoding="utf-8",
             ) as source:
                 self.assertNotIn("bearing_error", next(csv.reader(source)))
-            with (run_directory / "summary.json").open(
-                "r",
-                encoding="utf-8",
-            ) as source:
-                summary = json.load(source)
-            self.assertEqual(summary["recorded_bearing_edges"], 2)
-            self.assertAlmostEqual(summary["mean_bearing_error_deg"], 45.0)
+            self.assertFalse((run_directory / "summary.json").exists())
 
             metrics = _metrics(
                 _read_rows(run_directory / "trajectory.csv"),
@@ -112,11 +105,23 @@ class BearingMetricsTest(unittest.TestCase):
             )
             edge_metrics = metrics["bearing_edges"]
             self.assertAlmostEqual(
-                edge_metrics["car1->car2"]["mean_error_deg"],
+                edge_metrics["car1->car2"]["max_error_deg"],
                 0.0,
             )
             self.assertAlmostEqual(
-                edge_metrics["car1->car3"]["mean_error_deg"],
+                edge_metrics["car1->car3"]["max_error_deg"],
+                90.0,
+                places=6,
+            )
+            self.assertAlmostEqual(
+                edge_metrics["car1->car3"]["steady_state"][
+                    "steady_mean_error_deg"
+                ],
+                90.0,
+                places=6,
+            )
+            self.assertAlmostEqual(
+                metrics["bearing_global"]["max_error_deg"],
                 90.0,
                 places=6,
             )

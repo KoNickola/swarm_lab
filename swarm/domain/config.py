@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence, Tuple
+from math import isfinite
+from typing import Callable, Mapping, Optional, Sequence, Tuple, Union
 
 from swarm.domain.models import Vector3
 
@@ -14,15 +15,61 @@ class PIDConfig:
     ki: float
     kd: float
     integral_limit: float
-    output_limit: float
+    output_limit: Optional[float]
+
+
+VectorReferenceFunction = Callable[[float], Sequence[float]]
+XYCurveFunction = Callable[[float], float]
+
+
+@dataclass(frozen=True)
+class TimeVelocityReference:
+    """World-frame velocity generated from elapsed experiment time."""
+
+    function: VectorReferenceFunction
+
+
+@dataclass(frozen=True)
+class TimePositionReference:
+    """Absolute world-frame position generated from elapsed experiment time."""
+
+    function: VectorReferenceFunction
+
+
+@dataclass(frozen=True)
+class XYCurveReference:
+    """Static world-frame curve ``y=f(x)`` and signed tangential speed."""
+
+    function: XYCurveFunction
+    speed_mps: float
+
+
+LeaderTargetVelocity = Union[
+    Vector3,
+    TimeVelocityReference,
+    TimePositionReference,
+    XYCurveReference,
+]
+
+CONTROL_SPACE_PLANAR_XY = "planar_xy"
+CONTROL_SPACE_SPATIAL_XYZ = "spatial_xyz"
+SUPPORTED_CONTROL_SPACES = (
+    CONTROL_SPACE_PLANAR_XY,
+    CONTROL_SPACE_SPATIAL_XYZ,
+)
 
 
 @dataclass(frozen=True)
 class FormationControlConfig:
-    k_p: float = 1.0
-    k_i: float = 0.0
-    integral_limit: float = 1.0
+    k_p: float = 1.2
+    k_i: float = 0.08
+    integral_limit: float = 0.4
     output_limit: float = 0.4
+    leader_bearing_enabled: bool = False
+    bearing_deadband_enabled: bool = False
+    bearing_deadband_enter_deg: float = 1.5
+    bearing_deadband_exit_deg: float = 3
+    integral_window_s: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +94,12 @@ class ObstacleAvoidanceConfig:
     avoid_other_vehicles: bool = True
 
 
+# Global default for experiments that do not override controller_type.
+# GROUND_VEHICLE_CONTROLLER_TYPE = "differential"
+GROUND_VEHICLE_CONTROLLER_TYPE = "projected"
+# GROUND_VEHICLE_CONTROLLER_TYPE = "mecanum"
+
+
 @dataclass(frozen=True)
 class GroundVehicleControlConfig:
     track_width_m: float = 0.053
@@ -59,6 +112,15 @@ class GroundVehicleControlConfig:
     speed_pid: PIDConfig = field(
         default_factory=lambda: PIDConfig(1.2, 0.0, 0.5, 1.0, 0.3)
     )
+    controller_type: str = GROUND_VEHICLE_CONTROLLER_TYPE
+    mecanum_speed_pid: PIDConfig = field(
+        default_factory=lambda: PIDConfig(1.5, 0.0, 0.0, 1.0, 0.3)
+    )
+    projected_speed_pid: PIDConfig = field(
+        default_factory=lambda: PIDConfig(1.2, 0.5, 0.0, 1.0, 0.3)
+    )
+    projected_lookahead_m: float = 0.06
+    projected_max_yaw_rate_rps: float = 11.32
 
 
 @dataclass(frozen=True)
@@ -105,14 +167,18 @@ class RuntimeConfig:
 class ExperimentConfig:
     name: str
     algorithm: str
+    control_space: str
     vehicles: Tuple[VehicleConfig, ...]
     topology: TopologyConfig
-    leader_target_velocities: Mapping[str, Vector3]
+    leader_target_velocities: Mapping[str, LeaderTargetVelocity]
     formation_control: FormationControlConfig = field(default_factory=FormationControlConfig)
     ground_vehicle_control: GroundVehicleControlConfig = field(default_factory=GroundVehicleControlConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     obstacle_avoidance: ObstacleAvoidanceConfig = field(default_factory=ObstacleAvoidanceConfig)
     static_obstacles: Tuple[StaticObstacleConfig, ...] = ()
+    leader_position_pid: PIDConfig = field(
+        default_factory=lambda: PIDConfig(0.8, 0.0, 0.0, 1.0, None)
+    )
 
     @property
     def vehicle_ids(self) -> Tuple[str, ...]:
@@ -123,6 +189,11 @@ class ExperimentConfig:
 
         if not isinstance(self.algorithm, str) or not self.algorithm.strip():
             raise ValueError("algorithm must be a non-empty string")
+        if self.control_space not in SUPPORTED_CONTROL_SPACES:
+            raise ValueError(
+                "unsupported control_space %r; expected one of: %s"
+                % (self.control_space, ", ".join(SUPPORTED_CONTROL_SPACES))
+            )
         vehicle_ids = self.vehicle_ids
         if not vehicle_ids:
             raise ValueError("vehicles must not be empty")
@@ -133,20 +204,117 @@ class ExperimentConfig:
             raise ValueError("topology dimensions must match vehicle count")
         if len(self.topology.leader_mask) != n:
             raise ValueError("leader mask must match vehicle count")
+        leader_ids = []
         for index, vehicle in enumerate(self.vehicles):
             is_leader = bool(self.topology.leader_mask[index])
             if is_leader and vehicle.vehicle_id not in self.leader_target_velocities:
                 raise ValueError("missing target velocity for leader: %s" % vehicle.vehicle_id)
+            if is_leader:
+                leader_ids.append(vehicle.vehicle_id)
+        for vehicle_id in leader_ids:
+            target = self.leader_target_velocities[vehicle_id]
+            if isinstance(
+                target,
+                (TimeVelocityReference, TimePositionReference, XYCurveReference),
+            ):
+                if not callable(target.function):
+                    raise ValueError(
+                        "leader reference function must be callable: %s" % vehicle_id
+                    )
+                if isinstance(target, XYCurveReference) and not isfinite(target.speed_mps):
+                    raise ValueError(
+                        "XY curve speed must be finite: %s" % vehicle_id
+                    )
+                continue
+            try:
+                fixed_velocity = tuple(float(value) for value in target)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "leader target must be a 3D velocity or reference: %s"
+                    % vehicle_id
+                ) from None
+            if len(fixed_velocity) != 3 or not all(
+                isfinite(value) for value in fixed_velocity
+            ):
+                raise ValueError(
+                    "leader fixed velocity must contain three finite values: %s"
+                    % vehicle_id
+                )
+        position_pid = self.leader_position_pid
+        position_pid_values = (
+            position_pid.kp,
+            position_pid.ki,
+            position_pid.kd,
+            position_pid.integral_limit,
+        )
+        if not all(isfinite(value) for value in position_pid_values):
+            raise ValueError("leader position PID values must be finite")
+        if min(position_pid.kp, position_pid.ki, position_pid.kd) < 0.0:
+            raise ValueError("leader position PID gains must be non-negative")
+        if position_pid.integral_limit < 0.0:
+            raise ValueError(
+                "leader position PID integral_limit must be non-negative"
+            )
+        if position_pid.output_limit is not None:
+            raise ValueError(
+                "leader position PID output_limit must be None; "
+                "the combined leader velocity uses the shared speed limit"
+            )
         if self.runtime.control_hz <= 0.0:
             raise ValueError("control_hz must be positive")
         if self.runtime.command_speed_limit_mps <= 0.0:
             raise ValueError("command_speed_limit_mps must be positive")
+        if self.ground_vehicle_control.controller_type not in (
+            "differential",
+            "mecanum",
+            "projected",
+        ):
+            raise ValueError(
+                "ground vehicle controller_type must be "
+                "'differential', 'mecanum', or 'projected'"
+            )
         if self.ground_vehicle_control.max_speed_mps <= 0.0:
             raise ValueError("ground vehicle max_speed_mps must be positive")
+        if (
+            not isfinite(self.ground_vehicle_control.projected_lookahead_m)
+            or self.ground_vehicle_control.projected_lookahead_m <= 0.0
+        ):
+            raise ValueError("projected_lookahead_m must be positive and finite")
+        if (
+            not isfinite(self.ground_vehicle_control.projected_max_yaw_rate_rps)
+            or self.ground_vehicle_control.projected_max_yaw_rate_rps <= 0.0
+        ):
+            raise ValueError(
+                "projected_max_yaw_rate_rps must be positive and finite"
+            )
         if self.runtime.command_speed_limit_mps > self.ground_vehicle_control.max_speed_mps:
             raise ValueError(
                 "command_speed_limit_mps must not exceed ground vehicle max_speed_mps"
             )
+        formation = self.formation_control
+        if (
+            not isfinite(formation.integral_window_s)
+            or formation.integral_window_s <= 0.0
+        ):
+            raise ValueError("formation integral_window_s must be positive and finite")
+        deadband_thresholds = (
+            formation.bearing_deadband_enter_deg,
+            formation.bearing_deadband_exit_deg,
+        )
+        if not all(isfinite(value) for value in deadband_thresholds):
+            raise ValueError("bearing deadband thresholds must be finite")
+        if formation.bearing_deadband_enter_deg < 0.0:
+            raise ValueError("bearing_deadband_enter_deg must be non-negative")
+        if (
+            formation.bearing_deadband_enter_deg
+            >= formation.bearing_deadband_exit_deg
+        ):
+            raise ValueError(
+                "bearing_deadband_enter_deg must be less than "
+                "bearing_deadband_exit_deg"
+            )
+        if formation.bearing_deadband_exit_deg > 180.0:
+            raise ValueError("bearing_deadband_exit_deg must not exceed 180 degrees")
         avoidance = self.obstacle_avoidance
         if avoidance.vehicle_radius_m < 0.0:
             raise ValueError("vehicle_radius_m must be non-negative")

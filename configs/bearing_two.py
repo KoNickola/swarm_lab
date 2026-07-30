@@ -22,15 +22,19 @@ from swarm.domain.config import (
 CONFIG = ExperimentConfig(
     name="bearing_two",
     algorithm="bearing",
+    control_space="planar_xy",
     vehicles=(
         VehicleConfig("car1", "leader", "ground_vehicle", "10.1.1.81"),
-        VehicleConfig("car2", "follower", "ground_vehicle", "10.1.1.82"),
+        # VehicleConfig("car2", "follower", "ground_vehicle", "10.1.1.82"),
+        VehicleConfig("car4", "follower", "ground_vehicle", "10.1.1.84"),
     ),
     topology=TopologyConfig(
         adjacency_matrix=((0, 1), (1, 0)),
         bearing_matrix=(
-            ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-            ((0.0, -1.0, 0.0), (0.0, 0.0, 0.0)),
+            ((0.0, 0.0, 0.0), (0, 1.0, 0.0)),
+            ((0, -1.0, 0.0), (0.0, 0.0, 0.0)),
+            # ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            # ((-1.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
         ),
         leader_mask=(True, False),
     ),
