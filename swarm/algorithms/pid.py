@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, Union
+from collections import deque
+from typing import Deque, Optional, Sequence, Tuple, Union
 
 VectorLike = Union[Sequence[float], Tuple[float, ...]]
 
@@ -57,14 +58,27 @@ class PID:
 
 
 class VectorPIController:
-    """PI controller for two- or three-dimensional error vectors."""
+    """Vector PI controller whose integral covers a fixed time window."""
 
-    def __init__(self, kp: float, ki: float, integral_limit: float, output_limit: float) -> None:
+    def __init__(
+        self,
+        kp: float,
+        ki: float,
+        integral_limit: float,
+        output_limit: float,
+        integral_window_s: float,
+    ) -> None:
+        if integral_window_s <= 0.0:
+            raise ValueError("integral_window_s must be positive")
         self.kp = kp
         self.ki = ki
         self.integral_limit = integral_limit
         self.output_limit = output_limit
+        self.integral_window_s = integral_window_s
         self.integral: Tuple[float, ...] = ()
+        self._integral_samples: Deque[Tuple[float, Tuple[float, ...]]] = deque()
+        self._window_duration_s = 0.0
+        self._window_sum: Tuple[float, ...] = ()
 
     @staticmethod
     def _clamp(value: float, lower: float, upper: float) -> float:
@@ -76,6 +90,9 @@ class VectorPIController:
 
     def reset(self) -> None:
         self.integral = ()
+        self._integral_samples.clear()
+        self._window_duration_s = 0.0
+        self._window_sum = ()
 
     def update(self, error: VectorLike, dt: float) -> Tuple[float, ...]:
         if dt <= 0.0:
@@ -85,17 +102,49 @@ class VectorPIController:
             raise ValueError("error vector must not be empty")
         if not self.integral:
             self.integral = tuple(0.0 for _ in error_vec)
+            self._window_sum = tuple(0.0 for _ in error_vec)
         if len(self.integral) != len(error_vec):
             raise ValueError("error vector dimension changed during control")
 
-        new_integral = []
+        contribution = tuple(component * dt for component in error_vec)
+        self._integral_samples.append((dt, contribution))
+        self._window_duration_s += dt
+        self._window_sum = tuple(
+            total + added for total, added in zip(self._window_sum, contribution)
+        )
+
+        excess_s = self._window_duration_s - self.integral_window_s
+        while excess_s > 1e-12:
+            oldest_dt, oldest_contribution = self._integral_samples[0]
+            removed_dt = min(excess_s, oldest_dt)
+            removed_ratio = removed_dt / oldest_dt
+            self._window_sum = tuple(
+                total - value * removed_ratio
+                for total, value in zip(self._window_sum, oldest_contribution)
+            )
+            if removed_dt == oldest_dt:
+                self._integral_samples.popleft()
+            else:
+                remaining_ratio = 1.0 - removed_ratio
+                self._integral_samples[0] = (
+                    oldest_dt - removed_dt,
+                    tuple(value * remaining_ratio for value in oldest_contribution),
+                )
+            self._window_duration_s -= removed_dt
+            excess_s -= removed_dt
+        self._window_duration_s = min(
+            self._window_duration_s,
+            self.integral_window_s,
+        )
+
+        self.integral = tuple(
+            self._clamp(value, -self.integral_limit, self.integral_limit)
+            for value in self._window_sum
+        )
         output = []
         for index, component in enumerate(error_vec):
-            integral = self.integral[index] + component * dt
-            integral = self._clamp(integral, -self.integral_limit, self.integral_limit)
-            new_integral.append(integral)
+            integral = self.integral[index]
             value = self.kp * component + self.ki * integral
             value = self._clamp(value, -self.output_limit, self.output_limit)
             output.append(value)
-        self.integral = tuple(new_integral)
         return tuple(output)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import csv
 import io
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,7 +80,7 @@ class TelemetryTest(unittest.TestCase):
         self.assertEqual(histories["car1"]["x"], [7.0, 8.0, 9.0])
         self.assertEqual(histories["car1"]["y"], [-7.0, -8.0, -9.0])
 
-    def test_console_prints_formation_and_apf_velocity(self) -> None:
+    def test_console_prints_formation_and_apf_target_velocity(self) -> None:
         output = io.StringIO()
 
         with redirect_stdout(output):
@@ -90,7 +89,7 @@ class TelemetryTest(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("formation=(0.050,0.000,0.000)", text)
         self.assertIn("apf_target=(0.100,0.000,0.000)", text)
-        self.assertIn("apf_delta=(0.050,0.000,0.000)", text)
+        self.assertNotIn("apf_delta=", text)
 
     def test_recorder_samples_five_hz_from_fifty_hz_frames(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -102,16 +101,15 @@ class TelemetryTest(unittest.TestCase):
 
             with (run_directory / "trajectory.csv").open("r", encoding="utf-8") as source:
                 rows = list(csv.DictReader(source))
-            with (run_directory / "summary.json").open("r", encoding="utf-8") as source:
-                summary = json.load(source)
             self.assertGreaterEqual(len(rows), 4)
             self.assertLessEqual(len(rows), 6)
             self.assertEqual(rows[0]["front_left_command"], "10.250000")
             self.assertEqual(rows[0]["front_right_command"], "11.500000")
             self.assertEqual(rows[0]["rear_left_command"], "10.250000")
             self.assertEqual(rows[0]["rear_right_command"], "11.500000")
-            self.assertEqual(summary["recorded_rows"], len(rows))
             self.assertTrue((run_directory / "metadata.json").is_file())
+            self.assertTrue((run_directory / "bearing_edges.csv").is_file())
+            self.assertFalse((run_directory / "summary.json").exists())
 
             vehicles = _read_rows(run_directory / "trajectory.csv")
             metrics = _metrics(vehicles)

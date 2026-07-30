@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib
 import pkgutil
 import unittest
@@ -44,6 +45,12 @@ class ConfigCatalogTest(unittest.TestCase):
 
         self.assertEqual(config.name, "bearing_six")
         self.assertEqual(config.algorithm, "bearing")
+
+    def test_invalid_control_space_is_rejected(self) -> None:
+        config = _load_config("bearing_two")
+
+        with self.assertRaisesRegex(ValueError, "unsupported control_space"):
+            replace(config, control_space="invalid").validate()
 
 
 if __name__ == "__main__":

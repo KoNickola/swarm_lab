@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import time
 from typing import Callable, Dict, Mapping, Optional
 
@@ -13,7 +14,27 @@ from swarm.application.interfaces import (
     VehicleActuator,
     VelocityCommandFilter,
 )
-from swarm.domain.models import ActuationResult, ControlFrame
+from swarm.domain.config import (
+    CONTROL_SPACE_PLANAR_XY,
+    CONTROL_SPACE_SPATIAL_XYZ,
+    SUPPORTED_CONTROL_SPACES,
+)
+from swarm.domain.models import ActuationResult, ControlFrame, MocapSnapshot
+
+
+def _project_snapshot(
+    snapshot: MocapSnapshot,
+    control_space: str,
+) -> MocapSnapshot:
+    """Project one stable mocap snapshot into the configured control space."""
+
+    if control_space != CONTROL_SPACE_PLANAR_XY:
+        return snapshot
+    states = {
+        vehicle_id: replace(state, z=0.0, vz=0.0)
+        for vehicle_id, state in snapshot.states.items()
+    }
+    return replace(snapshot, states=states)
 
 
 class SystemClock:
@@ -42,11 +63,17 @@ class ControlLoop:
         shutdown_requested: Callable[[], bool],
         clock: Optional[Clock] = None,
         velocity_filter: Optional[VelocityCommandFilter] = None,
+        control_space: str = CONTROL_SPACE_SPATIAL_XYZ,
     ) -> None:
         if control_hz <= 0.0:
             raise ValueError("control_hz must be positive")
         if not actuators:
             raise ValueError("actuators must not be empty")
+        if control_space not in SUPPORTED_CONTROL_SPACES:
+            raise ValueError(
+                "unsupported control_space %r; expected one of: %s"
+                % (control_space, ", ".join(SUPPORTED_CONTROL_SPACES))
+            )
         self.nominal_dt = 1.0 / control_hz
         self.stop_on_loss_of_mocap = stop_on_loss_of_mocap
         self.state_source = state_source
@@ -56,6 +83,7 @@ class ControlLoop:
         self.shutdown_requested = shutdown_requested
         self.clock = clock or SystemClock()
         self.velocity_filter = velocity_filter
+        self.control_space = control_space
         self.previous_control_time: Optional[float] = None
         self.cycle = 0
 
@@ -82,7 +110,11 @@ class ControlLoop:
 
         cycle_started_at = self.clock.monotonic()
         snapshot = self.state_source.get_snapshot()
+        snapshot = _project_snapshot(snapshot, self.control_space)
         if self.stop_on_loss_of_mocap and not self.state_source.all_valid():
+            # The next valid cycle restarts with nominal dt, so time-based
+            # references and controller derivatives exclude the outage.
+            self.previous_control_time = None
             self._stop_all()
             self._sleep_remaining_period(cycle_started_at)
             return None

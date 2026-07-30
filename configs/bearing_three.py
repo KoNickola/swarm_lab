@@ -25,6 +25,7 @@ from swarm.domain.config import (
 CONFIG = ExperimentConfig(
     name="bearing_three",
     algorithm="bearing",
+    control_space="planar_xy",
     vehicles=(
         VehicleConfig("car3", "leader", "ground_vehicle", "10.1.1.83"),
         VehicleConfig("car5", "follower", "ground_vehicle", "10.1.1.85"),

@@ -7,6 +7,10 @@ import unittest
 
 from swarm.algorithms.bearing import BearingOnlyFormationController, build_topology_from_matrices
 from swarm.application.control_loop import ControlLoop
+from swarm.domain.config import (
+    CONTROL_SPACE_PLANAR_XY,
+    CONTROL_SPACE_SPATIAL_XYZ,
+)
 from swarm.domain.models import ActuationResult, MocapSnapshot, VehicleState
 from configs.bearing_two import CONFIG
 
@@ -132,6 +136,78 @@ class ControlLoopTest(unittest.TestCase):
         self.assertEqual([actuator.stopped for actuator in actuators.values()], [1, 1])
         self.assertEqual(telemetry.frames, [])
         self.assertAlmostEqual(clock.now, 10.02)
+
+    def test_planar_control_space_zeros_z_after_snapshot_acquisition(self) -> None:
+        clock = FakeClock()
+        source = FakeSource(valid=True)
+        source.states["car1"].z = 0.12
+        source.states["car1"].vz = -0.04
+        source.states["car2"].z = 0.09
+        source.states["car2"].vz = 0.03
+        actuators = {
+            vehicle_id: FakeActuator(vehicle_id)
+            for vehicle_id in CONFIG.vehicle_ids
+        }
+        telemetry = MemoryTelemetry()
+        loop = ControlLoop(
+            50.0,
+            True,
+            source,
+            _planner(),
+            actuators,
+            telemetry,
+            lambda: False,
+            clock,
+            control_space=CONTROL_SPACE_PLANAR_XY,
+        )
+
+        frame = loop.run_cycle()
+
+        self.assertIsNotNone(frame)
+        for state in frame.snapshot.states.values():
+            self.assertEqual(state.z, 0.0)
+            self.assertEqual(state.vz, 0.0)
+        self.assertEqual(source.states["car1"].z, 0.12)
+        self.assertEqual(source.states["car1"].vz, -0.04)
+        self.assertEqual(source.states["car2"].z, 0.09)
+        self.assertEqual(source.states["car2"].vz, 0.03)
+        self.assertTrue(
+            all(sample.actual[2] == 0.0 for sample in frame.planner.bearing_samples)
+        )
+        self.assertTrue(
+            all(command.vz == 0.0 for command in frame.planner.commands.values())
+        )
+
+    def test_spatial_control_space_preserves_z_and_vz(self) -> None:
+        clock = FakeClock()
+        source = FakeSource(valid=True)
+        source.states["car1"].z = 1.2
+        source.states["car1"].vz = -0.4
+        actuators = {
+            vehicle_id: FakeActuator(vehicle_id)
+            for vehicle_id in CONFIG.vehicle_ids
+        }
+        telemetry = MemoryTelemetry()
+        loop = ControlLoop(
+            50.0,
+            True,
+            source,
+            _planner(),
+            actuators,
+            telemetry,
+            lambda: False,
+            clock,
+            control_space=CONTROL_SPACE_SPATIAL_XYZ,
+        )
+
+        frame = loop.run_cycle()
+
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.snapshot.states["car1"].z, 1.2)
+        self.assertEqual(frame.snapshot.states["car1"].vz, -0.4)
+        self.assertTrue(
+            any(sample.actual[2] != 0.0 for sample in frame.planner.bearing_samples)
+        )
 
     def test_velocity_filter_runs_after_planning_and_before_actuation(self) -> None:
         clock = FakeClock()
