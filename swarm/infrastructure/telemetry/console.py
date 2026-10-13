@@ -34,18 +34,36 @@ class ConsoleTelemetrySink:
         max_edge_error_deg = (
             degrees(max(edge_errors_rad)) if edge_errors_rad else 0.0
         )
-        print(
-            "control | t=%.3f ready=%s mean_edge_error_deg=%.3f "
-            "max_edge_error_deg=%.3f valid_edges=%d dt=%.4f"
-            % (
-                frame.snapshot.timestamp,
-                frame.planner.ready,
-                mean_edge_error_deg,
-                max_edge_error_deg,
-                len(edge_errors_rad),
-                frame.dt,
+        if frame.planner.subspace_samples is not None:
+            rms = frame.planner.subspace_edge_rms
+            print("control | t=%.3f ready=%s subspace_edge_rms=%s valid_edges=%d dt=%.4f"
+                  % (frame.snapshot.timestamp, frame.planner.ready,
+                     "" if rms is None else "%.6f" % rms,
+                     frame.planner.subspace_valid_edges, frame.dt))
+        else:
+            print(
+                "control | t=%.3f ready=%s mean_edge_error_deg=%.3f "
+                "max_edge_error_deg=%.3f valid_edges=%d dt=%.4f"
+                % (
+                    frame.snapshot.timestamp,
+                    frame.planner.ready,
+                    mean_edge_error_deg,
+                    max_edge_error_deg,
+                    len(edge_errors_rad),
+                    frame.dt,
+                )
             )
-        )
+        task = frame.planner.task_feedback
+        if task is not None:
+            print("task | status=%s active=%s w=%s residual=%.6f reason=%s"
+                  % (task.status, ",".join(task.active_nodes),
+                     tuple(round(value, 4) for value in task.coefficients),
+                     task.allocation_residual, task.reason))
+            for goal in task.goals:
+                print("goal | %s state=%s error=%s stable=%.3f settled=%s"
+                      % (goal.goal_id, goal.state,
+                         tuple(round(value, 4) for value in goal.error),
+                         goal.stable_s, goal.settled))
         for vehicle_id, planner_command in frame.planner.commands.items():
             nominal_command = planner_command
             if frame.nominal_planner is not None:

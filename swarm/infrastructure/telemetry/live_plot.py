@@ -29,6 +29,21 @@ def _append_sample(
         _trim(histories[vehicle_id]["y"], max_points)
 
 
+def _subspace_title(rms, valid_edges):
+    """Format the same normalized edge RMS used by console and CSV."""
+    return "Swarm 2D Trajectory | subspace RMS=%s | valid edges=%d" % (
+        "" if rms is None else "%.6f" % rms, valid_edges)
+
+
+def _consume_sample(histories, kind, payload, max_points, axes):
+    if kind == "subspace_sample":
+        points, rms, valid_edges = payload
+        axes.set_title(_subspace_title(rms, valid_edges))
+        _append_sample(histories, points, max_points)
+    else:
+        _append_sample(histories, payload, max_points)
+
+
 def _plot_worker(
     vehicle_ids: Sequence[str],
     sample_queue: Any,
@@ -76,8 +91,8 @@ def _plot_worker(
                 kind, payload = "idle", None
             if kind == "close":
                 running = False
-            elif kind == "sample":
-                _append_sample(histories, payload, max_points)
+            elif kind in ("sample", "subspace_sample"):
+                _consume_sample(histories, kind, payload, max_points, axes)
                 dirty = True
 
             while running:
@@ -88,8 +103,8 @@ def _plot_worker(
                 if kind == "close":
                     running = False
                     break
-                if kind == "sample":
-                    _append_sample(histories, payload, max_points)
+                if kind in ("sample", "subspace_sample"):
+                    _consume_sample(histories, kind, payload, max_points, axes)
                     dirty = True
 
             now = time.monotonic()
@@ -153,6 +168,9 @@ class LiveTrajectoryPlotSink:
             if state.valid
         }
         item = ("sample", points)
+        if frame.planner.subspace_samples is not None:
+            item = ("subspace_sample", (points, frame.planner.subspace_edge_rms,
+                                        frame.planner.subspace_valid_edges))
         try:
             self._sample_queue.put_nowait(item)
         except queue.Full:

@@ -28,8 +28,8 @@ CONFIG = ExperimentConfig(
     control_space="planar_xy",
     vehicles=(
         VehicleConfig("car3", "leader", "ground_vehicle", "10.1.1.83"),
-        VehicleConfig("car5", "follower", "ground_vehicle", "10.1.1.85"),
         VehicleConfig("car6", "follower", "ground_vehicle", "10.1.1.86"),
+        VehicleConfig("car7", "follower", "ground_vehicle", "10.1.1.87"),
     ),
     topology=TopologyConfig(
         adjacency_matrix=(

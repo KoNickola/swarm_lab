@@ -1,4 +1,4 @@
-"""Topology-driven bearing-only formation algorithm."""
+"""Topology-driven vector PI bearing formation algorithm."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from typing import List, Mapping, Optional, Sequence, Tuple
 from swarm.algorithms.leader_motion import LeaderReferenceController
 from swarm.algorithms.pid import VectorPIController
 from swarm.domain.config import (
+    BEARING_MODE_ONLY,
     FormationControlConfig,
     LeaderTargetVelocity,
     PIDConfig,
+    SUPPORTED_BEARING_MODES,
 )
 from swarm.domain.models import (
     BearingSample,
@@ -48,7 +50,7 @@ class FormationTopology:
 
 
 class BearingOnlyFormationController:
-    """Produce translational commands using the existing bearing-only law."""
+    """Produce translational commands using the vector PI bearing law."""
 
     def __init__(
         self,
@@ -60,6 +62,8 @@ class BearingOnlyFormationController:
     ) -> None:
         if command_speed_limit_mps <= 0.0:
             raise ValueError("command_speed_limit_mps must be positive")
+        if control.bearing_mode not in SUPPORTED_BEARING_MODES:
+            raise ValueError("unsupported bearing_mode: %r" % control.bearing_mode)
         if not all(
             isfinite(value)
             for value in (
@@ -121,6 +125,13 @@ class BearingOnlyFormationController:
             return 0.0, 0.0, 0.0
         return x / norm, y / norm, z / norm
 
+    def _control_vector(self, vector: Vector3) -> Vector3:
+        """Select a unit bearing or an unscaled relative vector."""
+
+        if self.control.bearing_mode == BEARING_MODE_ONLY:
+            return self._normalize(*vector)
+        return float(vector[0]), float(vector[1]), float(vector[2])
+
     @staticmethod
     def _bearing_error(desired: Vector3, actual: Vector3) -> Vector3:
         return actual[0] - desired[0], actual[1] - desired[1], actual[2] - desired[2]
@@ -172,8 +183,10 @@ class BearingOnlyFormationController:
             if target is None or not target.valid:
                 continue
             relative = self._relative_vector(source, target)
-            actual = self._normalize(*relative)
-            desired = self._normalize(*self.topology.bearing_matrix[index][target_index])
+            actual = self._control_vector(relative)
+            desired = self._control_vector(
+                self.topology.bearing_matrix[index][target_index]
+            )
             error = self._bearing_error(desired, actual)
             total[0] += error[0]
             total[1] += error[1]

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Tuple
 
+from swarm.domain.tasks import TaskFeedbackResult
+
 Vector3 = Tuple[float, float, float]
 
 
@@ -46,7 +48,7 @@ class MocapSnapshot:
 
 @dataclass(frozen=True)
 class BearingSample:
-    """Desired and measured bearing for one directed topology edge."""
+    """Desired and measured edge vectors selected by the bearing mode."""
 
     source_id: str
     target_id: str
@@ -67,6 +69,20 @@ class VelocityCommand:
     is_leader: bool = False
 
 
+@dataclass(frozen=True)
+class SubspaceEdgeSample:
+    """Raw edge residual and dimensionless spectral-normalized error."""
+
+    source_id: str
+    target_id: str
+    relative: Optional[Vector3]
+    bias: Vector3
+    residual: Optional[Vector3]
+    matrix_norm: float
+    error: Optional[float]
+    invalid_reason: str = ""
+
+
 @dataclass
 class PlannerResult:
     """Planner output consumed by platform-specific vehicle actuators."""
@@ -77,6 +93,11 @@ class PlannerResult:
     max_error: float = 0.0
     ready: bool = False
     bearing_samples: List[BearingSample] = field(default_factory=list)
+    # None distinguishes other algorithms from subspace with no valid edges.
+    subspace_samples: Optional[List[SubspaceEdgeSample]] = None
+    subspace_edge_rms: Optional[float] = None
+    subspace_valid_edges: int = 0
+    task_feedback: Optional[TaskFeedbackResult] = None
 
 
 @dataclass(frozen=True)

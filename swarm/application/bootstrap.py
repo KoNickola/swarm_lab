@@ -117,4 +117,5 @@ def build_control_loop(config: ExperimentConfig) -> ControlLoop:
         shutdown_requested=rospy.is_shutdown,
         velocity_filter=velocity_filter,
         control_space=config.control_space,
+        duration_s=config.runtime.duration_s,
     )

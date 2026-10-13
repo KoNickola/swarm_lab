@@ -38,7 +38,11 @@ class ConfigCatalogTest(unittest.TestCase):
             self.assertIsInstance(config, ExperimentConfig)
             config.validate()
             self.assertEqual(config.name, module_name)
-            self.assertTrue(module_name.startswith(config.algorithm + "_"))
+            # flyingwing is an explicit filename exception for a subspace config.
+            if module_name == "flyingwing":
+                self.assertEqual(config.algorithm, "subspace")
+            else:
+                self.assertTrue(module_name.startswith(config.algorithm + "_"))
 
     def test_cli_loader_accepts_renamed_config(self) -> None:
         config = _load_config("bearing_six")

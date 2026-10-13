@@ -7,6 +7,7 @@ from math import isfinite
 from typing import Callable, Mapping, Optional, Sequence, Tuple, Union
 
 from swarm.domain.models import Vector3
+from swarm.domain.tasks import TaskFeedbackConfig
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class PIDConfig:
 
 
 VectorReferenceFunction = Callable[[float], Sequence[float]]
+ScalarReferenceFunction = Callable[[float], float]
 XYCurveFunction = Callable[[float], float]
 
 
@@ -59,9 +61,18 @@ SUPPORTED_CONTROL_SPACES = (
     CONTROL_SPACE_SPATIAL_XYZ,
 )
 
+BEARING_MODE_ONLY = "bearing_only"
+BEARING_MODE_BASED = "bearing_based"
+SUPPORTED_BEARING_MODES = (
+    BEARING_MODE_ONLY,
+    BEARING_MODE_BASED,
+)
+
 
 @dataclass(frozen=True)
 class FormationControlConfig:
+    """Shared limits and algorithm-specific bearing formation gains."""
+
     k_p: float = 1.2
     k_i: float = 0.5
     integral_limit: float = 0.4
@@ -71,6 +82,10 @@ class FormationControlConfig:
     bearing_deadband_enabled: bool = False
     bearing_deadband_enter_deg: float = 1.5
     bearing_deadband_exit_deg: float = 3
+    # Projection control does not reuse the PI proportional gain.
+    projection_k_p: float = 1.2
+    # Both bearing planners select normalized or distance-aware vectors.
+    bearing_mode: str = BEARING_MODE_ONLY
 
 
 
@@ -93,7 +108,7 @@ class ObstacleAvoidanceConfig:
     influence_distance_m: float = 0.1
     repulsive_gain: float = 0.0005
     min_distance_epsilon_m: float = 0.01
-    avoid_other_vehicles: bool = True
+    avoid_other_vehicles: bool = False
 
 
 # Global default for experiments that do not override controller_type.
@@ -121,7 +136,7 @@ class GroundVehicleControlConfig:
     projected_speed_pid: PIDConfig = field(
         default_factory=lambda: PIDConfig(1.2, 0.5, 0.0, 1.0, 0.3)
     )
-    projected_lookahead_m: float = 0.03
+    projected_lookahead_m: float = 0.06
     projected_max_yaw_rate_rps: float = 11.32
 
 
@@ -138,6 +153,40 @@ class TopologyConfig:
     adjacency_matrix: Sequence[Sequence[int]]
     bearing_matrix: Sequence[Sequence[Sequence[float]]]
     leader_mask: Sequence[bool]
+
+
+@dataclass(frozen=True)
+class SubspaceEdgeConfig:
+    """One undirected edge; bias points from source to target."""
+
+    source_id: str
+    target_id: str
+    matrix: Optional[Sequence[Sequence[float]]] = None
+    bias: Optional[Sequence[float]] = None
+    # One nonzero vector spanning the free relative-motion subspace.
+    free_direction: Optional[Sequence[float]] = None
+    # Two expected points define the one-dimensional free relative subspace.
+    expected_points: Optional[
+        Tuple[Sequence[float], Sequence[float]]
+    ] = None
+
+
+@dataclass(frozen=True)
+class SubspaceTopologyConfig:
+    edges: Tuple[SubspaceEdgeConfig, ...] = ()
+
+
+@dataclass(frozen=True)
+class SubspaceControlConfig:
+    """Raw feedback gain and optional stacked nullspace task modes."""
+
+    k: float = 1.0
+    modes: Optional[Sequence[Sequence[float]]] = None
+    coefficients: Union[
+        Sequence[Union[float, ScalarReferenceFunction]],
+        VectorReferenceFunction,
+    ] = ()
+    task_feedback: Optional[TaskFeedbackConfig] = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +212,8 @@ class RuntimeConfig:
     udp_timeout_s: float = 0.2
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     command_speed_limit_mps: float = 0.30
+    # Optional automatic stop time for one experiment run.
+    duration_s: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -171,7 +222,7 @@ class ExperimentConfig:
     algorithm: str
     control_space: str
     vehicles: Tuple[VehicleConfig, ...]
-    topology: TopologyConfig
+    topology: Union[TopologyConfig, SubspaceTopologyConfig]
     leader_target_velocities: Mapping[str, LeaderTargetVelocity]
     formation_control: FormationControlConfig = field(default_factory=FormationControlConfig)
     ground_vehicle_control: GroundVehicleControlConfig = field(default_factory=GroundVehicleControlConfig)
@@ -181,6 +232,8 @@ class ExperimentConfig:
     leader_position_pid: PIDConfig = field(
         default_factory=lambda: PIDConfig(0.8, 0.0, 0.0, 1.0, None)
     )
+
+    subspace_control: SubspaceControlConfig = field(default_factory=SubspaceControlConfig)
 
     @property
     def vehicle_ids(self) -> Tuple[str, ...]:
@@ -201,18 +254,28 @@ class ExperimentConfig:
             raise ValueError("vehicles must not be empty")
         if len(set(vehicle_ids)) != len(vehicle_ids):
             raise ValueError("vehicle IDs must be unique")
-        n = len(vehicle_ids)
-        if len(self.topology.adjacency_matrix) != n or len(self.topology.bearing_matrix) != n:
-            raise ValueError("topology dimensions must match vehicle count")
-        if len(self.topology.leader_mask) != n:
-            raise ValueError("leader mask must match vehicle count")
         leader_ids = []
-        for index, vehicle in enumerate(self.vehicles):
-            is_leader = bool(self.topology.leader_mask[index])
-            if is_leader and vehicle.vehicle_id not in self.leader_target_velocities:
-                raise ValueError("missing target velocity for leader: %s" % vehicle.vehicle_id)
-            if is_leader:
-                leader_ids.append(vehicle.vehicle_id)
+        if self.algorithm == "subspace":
+            from swarm.domain.subspace import prepare_subspace
+
+            prepare_subspace(self.vehicle_ids, self.topology, self.subspace_control,
+                             self.control_space)
+            if self.leader_target_velocities:
+                raise ValueError("subspace requires empty leader_target_velocities")
+        else:
+            if not isinstance(self.topology, TopologyConfig):
+                raise ValueError("bearing algorithms require TopologyConfig")
+            n = len(vehicle_ids)
+            if len(self.topology.adjacency_matrix) != n or len(self.topology.bearing_matrix) != n:
+                raise ValueError("topology dimensions must match vehicle count")
+            if len(self.topology.leader_mask) != n:
+                raise ValueError("leader mask must match vehicle count")
+            for index, vehicle in enumerate(self.vehicles):
+                is_leader = bool(self.topology.leader_mask[index])
+                if is_leader and vehicle.vehicle_id not in self.leader_target_velocities:
+                    raise ValueError("missing target velocity for leader: %s" % vehicle.vehicle_id)
+                if is_leader:
+                    leader_ids.append(vehicle.vehicle_id)
         for vehicle_id in leader_ids:
             target = self.leader_target_velocities[vehicle_id]
             if isinstance(
@@ -271,6 +334,10 @@ class ExperimentConfig:
             raise ValueError("control_hz must be positive")
         if self.runtime.command_speed_limit_mps <= 0.0:
             raise ValueError("command_speed_limit_mps must be positive")
+        if self.runtime.duration_s is not None and (
+            not isfinite(self.runtime.duration_s) or self.runtime.duration_s <= 0.0
+        ):
+            raise ValueError("duration_s must be positive and finite when provided")
         if self.ground_vehicle_control.controller_type not in (
             "differential",
             "mecanum",
@@ -299,6 +366,16 @@ class ExperimentConfig:
                 "command_speed_limit_mps must not exceed ground vehicle max_speed_mps"
             )
         formation = self.formation_control
+        if formation.bearing_mode not in SUPPORTED_BEARING_MODES:
+            raise ValueError(
+                "unsupported bearing_mode %r; expected one of: %s"
+                % (formation.bearing_mode, ", ".join(SUPPORTED_BEARING_MODES))
+            )
+        if (
+            not isfinite(formation.projection_k_p)
+            or formation.projection_k_p < 0.0
+        ):
+            raise ValueError("formation projection_k_p must be non-negative and finite")
         if (
             not isfinite(formation.integral_window_s)
             or formation.integral_window_s <= 0.0

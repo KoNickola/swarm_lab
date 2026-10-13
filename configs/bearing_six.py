@@ -58,8 +58,8 @@ def car2_time_velocity(time_s: float):
 def car6_time_velocity(time_s: float):
     """Alternate between +x and -x every two seconds."""
 
-    phase_s = time_s % (3.0 * 2)
-    vy = 0.3 if phase_s < 3 else -0.3
+    phase_s = time_s % (2.0 * 2)
+    vy = -0.15 if phase_s < 2 else +0.15
     return 0.0, vy, 0.0
 
 def car1_target_position(time_s: float):
@@ -67,7 +67,7 @@ def car1_target_position(time_s: float):
     return -0.2, 0.8, 0.0
 CONFIG = ExperimentConfig(
     name="bearing_six",
-    algorithm="bearing",
+    algorithm="bearing_projection",
     control_space="planar_xy",
     vehicles=tuple(
         VehicleConfig(
@@ -84,11 +84,11 @@ CONFIG = ExperimentConfig(
         leader_mask=(True, True, False, False, False, True),
     ),
     leader_target_velocities={
-        "car1": (-0.15, 0.0, 0.0),
+        "car1": (0, 0.0, 0.0),
         # "car1": TimePositionReference(car1_target_position),
         # "car2": TimeVelocityReference(car2_time_velocity),
         # "car6": TimeVelocityReference(car6_time_velocity),
-        "car2": (-0.15, 0.0, 0.0),
+        "car2": (0, 0.0, 0.0),
         "car6": (0.0, 0.0, 0.0)
     },
     obstacle_avoidance=ObstacleAvoidanceConfig(enabled=True),

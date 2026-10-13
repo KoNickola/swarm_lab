@@ -15,7 +15,7 @@ from swarm.domain.models import (
 
 
 class SwarmPlanner(Protocol):
-    """Planner extension point for bearing-only, boids, or future algorithms."""
+    """Planner extension point for bearing formation or future algorithms."""
 
     def step(self, snapshot: MocapSnapshot, dt: float) -> PlannerResult: ...
 

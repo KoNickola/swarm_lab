@@ -16,6 +16,7 @@ EdgeKey = Tuple[str, str]
 VehicleRows = DefaultDict[str, List[Dict[str, float]]]
 BearingEdgeRows = DefaultDict[EdgeKey, List[Dict[str, float]]]
 SeriesPoint = Tuple[float, Optional[float]]
+SubspaceSummaryRows = List[Dict[str, float]]
 
 
 def _percentage(value: str) -> float:
@@ -47,6 +48,12 @@ def _parse_args() -> argparse.Namespace:
         type=_percentage,
         default=5.0,
         help="relative steady-error band, default: 5",
+    )
+    parser.add_argument(
+        "--max-time-s",
+        type=float,
+        default=None,
+        help="plot only samples at or before this time; default: all samples",
     )
     return parser.parse_args()
 
@@ -81,6 +88,22 @@ def _read_bearing_rows(path: Path) -> BearingEdgeRows:
     for rows in edges.values():
         rows.sort(key=lambda row: row["time_s"])
     return edges
+
+
+def _read_subspace_summary(path: Path) -> SubspaceSummaryRows:
+    """Read the recorded subspace edge RMS series when present."""
+
+    if not path.is_file():
+        return []
+    rows: SubspaceSummaryRows = []
+    with path.open("r", newline="", encoding="utf-8") as source:
+        for raw in csv.DictReader(source):
+            rows.append({
+                key: float(value) if value else float("nan")
+                for key, value in raw.items()
+            })
+    rows.sort(key=lambda row: row["time_s"])
+    return rows
 
 
 def _valid_angle_rad(row: Dict[str, float]) -> Optional[float]:
@@ -402,17 +425,117 @@ def _edges_by_source(
     return dict(grouped)
 
 
+def _plot_subspace_edges(
+    run_directory: Path,
+    max_time_s: Optional[float] = None,
+) -> None:
+    """Plot recorded normalized errors for all directed subspace edges."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    path = run_directory / "subspace_edges.csv"
+    if not path.is_file():
+        return
+    edges: DefaultDict[EdgeKey, List[Tuple[float, float]]] = defaultdict(list)
+    with path.open(newline="", encoding="utf-8") as source:
+        for row in csv.DictReader(source):
+            time_s = float(row["time_s"])
+            if max_time_s is not None and time_s > max_time_s:
+                continue
+            # Missing or invalid samples create gaps in the plotted curves.
+            error = (
+                float(row["normalized_error"])
+                if row["valid"] == "1" and row["normalized_error"]
+                else float("nan")
+            )
+            edges[(row["source_id"], row["target_id"])].append((time_s, error))
+    if not edges:
+        return
+    with plt.rc_context({"font.size": 30}):
+        figure, axis = plt.subplots(figsize=(12, 9))
+        for index, (edge, points) in enumerate(sorted(edges.items())):
+            points.sort()
+            axis.plot(
+                [point[0] for point in points],
+                [point[1] for point in points],
+                linewidth=2.0,
+                linestyle=("-", "--", "-.")[index % 3],
+                label="%s → %s" % edge,
+            )
+        axis.set_xlabel("time (s)")
+        axis.set_ylabel("Normalized constraint error")
+        axis.set_ylim(0.0, 1.0)
+        axis.grid(True, linestyle="--", alpha=0.4)
+        axis.legend(loc="upper right", fontsize=18, ncol=3)
+        figure.tight_layout()
+        figure.savefig(str(run_directory / "edge_error.png"), dpi=160)
+        plt.close(figure)
+
+
 def _plot(
     run_directory: Path,
     vehicles: VehicleRows,
     bearing_edges: Optional[BearingEdgeRows] = None,
     analysis: Optional[Dict[str, object]] = None,
+    max_time_s: Optional[float] = None,
 ) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    if max_time_s is not None and max_time_s < 0.0:
+        raise ValueError("max_time_s must be non-negative")
+    subspace_summary = _read_subspace_summary(
+        run_directory / "subspace_summary.csv"
+    )
+    if max_time_s is not None:
+        subspace_summary = [
+            row for row in subspace_summary if row["time_s"] <= max_time_s
+        ]
+    if subspace_summary:
+        # Allow vertical space for the enlarged constraint-error label.
+        figure, axes = plt.subplots(1, 1, figsize=(10, 9), squeeze=False)
+        axis = axes[0][0]
+        valid_rows = [
+            row for row in subspace_summary
+            if isfinite(row.get("subspace_edge_rms", float("nan")))
+        ]
+        axis.plot(
+            [row["time_s"] for row in valid_rows],
+            [row["subspace_edge_rms"] for row in valid_rows],
+            color="black",
+            linewidth=2.0,
+        )
+        axis.set_xlabel("time (s)")
+        axis.set_ylabel("Normalized constraint error (RMS)")
+        axis.set_ylim(0.0, 1.0)
+        axis.grid(True, linestyle="--", alpha=0.4)
+        # Scale axis labels and tick labels from their configured font sizes.
+        for text in (
+            [axis.xaxis.label, axis.yaxis.label]
+            + axis.get_xticklabels()
+            + axis.get_yticklabels()
+        ):
+            text.set_fontsize(text.get_fontsize() * 3.0)
+        figure.tight_layout()
+        figure.savefig(str(run_directory / "analysis.png"), dpi=160)
+        plt.close(figure)
+        _plot_subspace_edges(run_directory, max_time_s)
+        return
+
+    if max_time_s is not None:
+        vehicles = {
+            vehicle_id: [row for row in rows if row["time_s"] <= max_time_s]
+            for vehicle_id, rows in vehicles.items()
+        }
+        bearing_edges = {
+            edge: [row for row in rows if row["time_s"] <= max_time_s]
+            for edge, rows in (bearing_edges or {}).items()
+        }
     edge_rows = bearing_edges or defaultdict(list)
     grouped_edges = _edges_by_source(edge_rows)
     panel_count = 2 + len(grouped_edges)
@@ -575,7 +698,13 @@ def main() -> None:
         encoding="utf-8",
     ) as output:
         json.dump(metrics, output, indent=2, ensure_ascii=False)
-    _plot(run_directory, vehicles, bearing_edges, metrics)
+    _plot(
+        run_directory,
+        vehicles,
+        bearing_edges,
+        metrics,
+        max_time_s=args.max_time_s,
+    )
     print("analysis | %s" % run_directory)
 
 

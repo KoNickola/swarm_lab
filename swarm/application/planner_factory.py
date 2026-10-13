@@ -8,6 +8,7 @@ from swarm.algorithms.bearing import (
     BearingOnlyFormationController,
     build_topology_from_matrices,
 )
+from swarm.algorithms.bearing_projection import BearingProjectionFormationController
 from swarm.application.interfaces import SwarmPlanner
 from swarm.domain.config import ExperimentConfig
 
@@ -31,9 +32,38 @@ def _build_bearing_planner(config: ExperimentConfig) -> SwarmPlanner:
     )
 
 
+def _build_bearing_projection_planner(config: ExperimentConfig) -> SwarmPlanner:
+    topology = build_topology_from_matrices(
+        vehicle_ids=config.vehicle_ids,
+        adjacency_matrix=config.topology.adjacency_matrix,
+        bearing_matrix=config.topology.bearing_matrix,
+        leader_mask=config.topology.leader_mask,
+    )
+    return BearingProjectionFormationController(
+        topology=topology,
+        leader_target_velocities=config.leader_target_velocities,
+        control=config.formation_control,
+        command_speed_limit_mps=config.runtime.command_speed_limit_mps,
+        leader_position_pid=config.leader_position_pid,
+    )
+
+
+def _build_subspace_planner(config: ExperimentConfig) -> SwarmPlanner:
+    from swarm.algorithms.subspace import SubspaceFormationController
+
+    if config.leader_target_velocities:
+        raise ValueError("subspace requires empty leader_target_velocities")
+    return SubspaceFormationController(
+        config.vehicle_ids, config.topology, config.subspace_control,
+        config.control_space, config.runtime.command_speed_limit_mps,
+    )
+
+
 # Each selectable planner has one builder registered under its config value.
 _PLANNER_BUILDERS: Dict[str, PlannerBuilder] = {
+    "subspace": _build_subspace_planner,
     "bearing": _build_bearing_planner,
+    "bearing_projection": _build_bearing_projection_planner,
 }
 
 

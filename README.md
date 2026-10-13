@@ -1,472 +1,220 @@
 # Swarm Lab
 
-面向地面车群的分层编队控制实验项目。当前实现以 bearing-only 编队控制为核心，支持 ROS/VRPN 动捕状态输入、人工势场速度过滤、可切换差速/麦克纳姆轮地面车控制器、UDP 轮速指令下发，以及控制过程中的终端输出、实时轨迹窗口和实验数据记录。
+面向地面车群的分层编队控制实验项目，使用 ROS1/VRPN 动捕状态、编队规划、
+可选人工势场避障、底盘控制和 UDP 轮速下发。支持 bearing 向量 PI、bearing
+投影矩阵和矩阵权子空间控制，以及终端输出、实时轨迹和实验数据记录。
 
-## 项目结构
+当前默认入口配置为 `bearing_three`，公共底盘控制器为 `projected`，
+控制频率为 **50 Hz**，目标速度模长上限为 **0.30 m/s**。
+各实验可覆盖公共默认值，实际参数以配置模块导出的 `CONFIG` 为准。
 
-```text
-run_experiment.py                  # 实验入口
-configs/                           # 可切换的实验配置
-tools/postprocess.py               # 实验记录后处理
-tools/plot_speed_tracking.py       # 每辆车独立速度与航向跟踪图
-tests/                             # 不依赖 ROS 和实车的单元测试
-swarm/
-  domain/                          # 数据模型与类型化配置
-  algorithms/                      # 编队、车辆控制、避障算法
-  application/                     # 控制循环、接口和 planner 工厂
-  infrastructure/                  # ROS、UDP、遥测和地面车适配器
-```
+- [实验构型与车辆映射](configs/README.md)
+- [控制公式、Leader 参考、底盘与任务编排](docs/control_reference.md)
+- [记录格式、误差指标与离线分析](docs/data_analysis.md)
 
-一次控制周期的执行顺序为：
+## 环境与快速开始
 
-```text
-ROS/VRPN 动捕状态
-  -> ControlLoop
-  -> ControlSpace 投影，地面编队截断 z/vz，无人机保留 xyz/vxyz
-  -> SwarmPlanner，由 CONFIG.algorithm 选择
-  -> VelocityCommandFilter，可选人工势场避障
-  -> VehicleActuator，按全局参数选择差速或麦轮速度控制与轮速分配
-  -> UDP Command Transport
-  -> Console / Live Plot / CSV Recorder
-```
+实车运行需要 Python 3、ROS1（`rospy`、`geometry_msgs`）、可用的 VRPN 动捕
+话题，以及到车辆底盘的 UDP 网络。Python 依赖见 [requirements.txt](requirements.txt)。
+ROS 包由 ROS 环境提供，不包含在该依赖文件中。
 
-`ControlLoop` 保持与平台无关：状态源、编队规划器、速度过滤器、执行器和遥测输出都通过接口注入。新增编队算法或执行平台时，应优先扩展接口实现，而不是改动控制循环。
-
-## 当前能力
-
-- 编队算法：`bearing`。
-- 实验配置：单 leader 运动测试，以及两车、三车、四车、六车 bearing 编队；六车配置使用按索引赋值的有向 bearing 矩阵，不自动生成反向边。
-- 默认配置：`configs.bearing_three`。
-- 控制频率：默认 50 Hz。
-- 目标速度上限：默认 `0.30 m/s`，且不得超过地面车物理速度上限。
-- 底盘控制：全局选择原差速或麦克纳姆轮控制器，默认保持原差速实现。
-- Leader 参考：固定速度、时间速度函数、时间位置函数和静态世界系
-  `y=f(x)` 曲线。
-- 遥测：终端输出 10 Hz，实时轨迹窗口 10 Hz，CSV 记录 5 Hz。
-- 避障：基础二维人工势场过滤器，可叠加静态圆形障碍物和其他车辆的排斥速度。
-
-## 环境要求
-
-运行实车实验需要：
-
-- Python 3
-- ROS1
-- `rospy`
-- `geometry_msgs`
-- VRPN 动捕话题，默认前缀为 `/vrpn_client_node`
-- Matplotlib，项目 `requirements.txt` 中列出
-
-安装 Python 依赖：
+以下命令在仓库根目录 `swarm_lab/` 执行，并使用已经加载 ROS 环境的 Python：
 
 ```bash
 python3 -m pip install -r requirements.txt
+python3 run_experiment.py --help
+python3 run_experiment.py
 ```
 
-如果需要实时轨迹窗口，Linux/WSL 环境还需要可用的图形显示和交互式 Matplotlib backend。若提示 backend 为 `agg`，可安装 Tk 支持后指定 backend：
+默认配置使用 `car3`、`car6`、`car7`，地址分别为 `10.1.1.83`、
+`10.1.1.86`、`10.1.1.87`。动捕订阅前缀默认为 `/vrpn_client_node`；
+运行前核对配置中的车辆 ID、地址、拓扑顺序和动捕世界坐标系。
+
+```bash
+# 切换实验模块；也支持完整模块名 configs.flyingwing
+python3 run_experiment.py --config flyingwing
+
+# 关闭实时绘图，保留数据记录
+python3 run_experiment.py --config bearing_three --no-plot
+
+# 同时关闭实时绘图和数据记录
+python3 run_experiment.py --config bearing_three --no-plot --no-record
+```
+
+`--no-plot` 与 `--no-record` 只控制遥测输出，仍会运行实车控制。
+实时轨迹窗口需要图形显示和交互式 Matplotlib backend。Linux/WSL 可安装
+Tk 支持并指定 backend：
 
 ```bash
 sudo apt install python3-tk
 MPLBACKEND=TkAgg python3 run_experiment.py
 ```
 
-## 运行实验
+默认持续运行；`Ctrl+C` 退出。配置中的 `RuntimeConfig.duration_s` 可设置
+自动停止时长。动捕丢失默认停车；控制循环结束时发送停车指令并关闭资源。
+启动时先校验配置并构造 planner，再连接 ROS 和底盘。
 
-默认运行三车配置：
-
-```bash
-python3 run_experiment.py
-```
-
-切换配置：
-
-```bash
-python3 run_experiment.py --config bearing_two
-python3 run_experiment.py --config bearing_three
-python3 run_experiment.py --config bearing_four
-python3 run_experiment.py --config bearing_six
-python3 run_experiment.py --config bearing_leader_motion
-```
-
-关闭部分遥测输出：
-
-```bash
-python3 run_experiment.py --no-plot
-python3 run_experiment.py --no-record
-```
-
-也可以传入完整模块名：
-
-```bash
-python3 run_experiment.py --config configs.bearing_six
-```
-
-程序启动后会先验证配置。若 `CONFIG.algorithm` 不受支持、车辆列表与拓扑维度不一致、leader 缺少目标速度、速度上限不合法或障碍物配置无效，会在连接外部资源前报错退出。
-
-## 实验配置
-
-配置文件位于 `configs/`，统一导出 `CONFIG: ExperimentConfig`。文件名、`CONFIG.name` 和 `CONFIG.algorithm` 前缀应保持一致，例如：
-
-```python
-CONFIG = ExperimentConfig(
-    name="bearing_six",
-    algorithm="bearing",
-    control_space="planar_xy",
-    # 其余实验参数
-)
-```
-
-当前配置：
-
-| 配置 | 车辆 | leader | 说明 | 避障 |
-| --- | --- | --- | --- | --- |
-| `bearing_leader_motion` | `car5` | `car5` | 单车三类 leader 参考与位置 PID 调试 | 关闭 |
-| `bearing_two` | `car1`, `car2` | `car1` | 两车 leader/follower 跟随 | 关闭 |
-| `bearing_three` | `car3`, `car5`, `car6` | `car3` | 三车等腰直角三角形 | 开启 |
-| `bearing_four` | `car1` - `car4` | `car1`, `car2` | 四车正方形子构型 | 关闭 |
-| `bearing_six` | `car1` - `car6` | `car1`, `car2`, `car6` | 六车柔性构型 | 开启 |
-
-所有 bearing 都定义在动捕世界坐标系中。Bearing-only 控制约束相对方向和构型比例，不单独指定绝对平移、旋转和尺度。构型示意可参考 `configs/README.md`，实际有效边与方向以各配置文件中的 `topology` 为准。
-
-### Bearing 角误差滞环死区
-
-Bearing PI 提供逐车角误差施密特死区，当前公共默认值为关闭。启用后，控制器
-使用该车所有有效出边的
-最大 bearing 角误差：`planar_xy` 使用投影后的二维向量，
-`spatial_xyz` 使用完整三维向量。误差降至
-`FormationControlConfig.bearing_deadband_enter_deg=1.5°` 时进入稳定状态，
-误差达到 `bearing_deadband_exit_deg=3°` 时恢复控制；两个阈值之间保持原
-状态。稳定状态下 bearing 修正精确为零并复位对应 PI，避免接近目标构型时
-微小速度向量变号导致目标朝向跳变。Leader 的预设运动参考不受影响，只抑制
-其可选的 bearing 修正分量。
-
-`bearing_deadband_enabled=True` 可启用该机制。参数会随实验配置写入
-`metadata.json`，并要求满足
-`0 <= bearing_deadband_enter_deg < bearing_deadband_exit_deg <= 180`。
-
-### Leader 运动参考
-
-单车调试配置位于 `configs/bearing_leader_motion.py`。修改文件顶部的
-`REFERENCE_MODE` 可在 `time_velocity`、`time_position` 和 `xy_curve`
-之间切换；`POSITION_PID_KP/KI/KD/INTEGRAL_LIMIT` 用于调节时间位置和
-静态曲线共用的外环位置 PID。位置模式使用绝对世界坐标，运行前必须把
-`POSITION_ORIGIN_X_M`、`POSITION_ORIGIN_Y_M` 设置为车辆的实测启动位置。
-静态曲线也使用绝对世界坐标，应调整 `CURVE_Y_OFFSET_M`，使车辆启动点
-`(x_start, y_start)` 满足 `leader_xy_curve(x_start) ≈ y_start`，避免启动时
-产生突变的法向纠偏。
-该文件只暴露输入模式、三类轨迹参数和位置环 PID 参数。运行时、底盘、
-formation、避障和遥测参数统一使用 `swarm/domain/config.py` 中的公共默认值；
-当前公共目标速度上限为 `0.30 m/s`。默认运行配置仍为 `bearing_three`。
-
-`leader_target_velocities` 保留原固定三维速度格式，也可为每个 leader
-独立配置运动参考：
-
-```python
-from math import sin
-
-from swarm.domain.config import (
-    FormationControlConfig,
-    PIDConfig,
-    TimePositionReference,
-    TimeVelocityReference,
-    XYCurveReference,
-)
-
-
-def car1_velocity(time_s):
-    """Return a world-frame time-varying velocity."""
-
-    return 0.08, 0.03 * sin(time_s), 0.0
-
-
-def car2_position(time_s):
-    """Return an absolute world-frame target position."""
-
-    return 0.4 + 0.05 * time_s, 0.6
-
-
-def car6_curve_y(x_m):
-    """Return the world-frame y coordinate of a static curve."""
-
-    return 0.3 * sin(x_m)
-
-
-CONFIG = ExperimentConfig(
-    # 其余实验参数
-    leader_target_velocities={
-        "car1": TimeVelocityReference(car1_velocity),
-        "car2": TimePositionReference(car2_position),
-        "car6": XYCurveReference(car6_curve_y, speed_mps=0.06),
-    },
-    leader_position_pid=PIDConfig(0.8, 0.0, 0.0, 1.0, None),
-    formation_control=FormationControlConfig(leader_bearing_enabled=True),
-)
-```
-
-各引用的语义如下：
-
-- 固定三元组：世界坐标系固定速度，兼容原配置。
-- `TimeVelocityReference`：函数参数为有效控制累计时间，返回二维或三维
-  世界系速度。
-- `TimePositionReference`：函数参数为有效控制累计时间，返回二维或三维
-  世界系绝对位置；二维函数令 `vz=0`。
-- `XYCurveReference`：函数以当前世界系 `x` 为输入并返回目标 `y`，使用
-  `speed_mps` 沿曲线切向运动，位置 PID 修正法向偏差。该模式适用于单值
-  `y=f(x)` 曲线，不表示竖直线或回环曲线。
-
-配置函数应定义为配置模块顶层的具名函数。`metadata.json` 记录函数的
-`module.qualname` 标识，不保存函数源码、lambda 捕获值或闭包状态。
-
-`leader_bearing_enabled=False` 是兼容默认值，leader 保持原固定参考逻辑。
-启用后，leader 的预设参考速度和现有 bearing PI 分量先相加，再共同使用
-`RuntimeConfig.command_speed_limit_mps` 做一次向量限幅：
+## 架构与目录
 
 ```text
-leader_command = vector_limit(reference_velocity + bearing_velocity)
+run_experiment.py       实验命令行入口
+configs/                实验配置，每个模块导出 CONFIG
+task_programs/         时间函数与闭环任务程序
+swarm/
+  domain/               状态模型、类型化配置、子空间与任务定义
+  algorithms/           编队、Leader 参考、PID、底盘控制与避障
+  application/          控制循环、接口、planner 工厂与运行装配
+  infrastructure/       ROS 动捕、UDP、地面车执行器与遥测适配器
+tools/                  离线分析、跟踪曲线与动画
+tests/                 不依赖 ROS 或实车的测试
+docs/                   控制参考与数据分析说明
+runs/                   实验记录输出，已加入 .gitignore
 ```
 
-两个分量不会分别使用全局速度上限。Bearing PI 原有的逐轴输出保护仍保留，
-位置外环 PID 的 `output_limit` 必须为 `None`，避免在合成前形成第二个速度
-饱和环节。Follower 和可选 Leader bearing 分量共同使用角误差滞环死区；
-APF 顺序、车辆 PID 和 UDP 格式保持不变。
-动捕失效期间有效控制时间冻结，恢复后的第一个周期使用标称 `dt`。
+一次控制周期的执行顺序：
+
+```text
+ROS/VRPN 状态快照
+  -> ControlLoop：控制空间投影
+  -> SwarmPlanner：编队反馈与运动任务
+  -> VelocityCommandFilter：可选人工势场避障
+  -> VehicleActuator：底盘控制与轮速分配
+  -> UDP 轮速发送
+  -> Console / Live Plot / CSV Recorder
+```
+
+`ControlLoop` 通过接口注入状态源、planner、速度过滤器、执行器和遥测。
+实时绘图在独立进程运行。`planar_xy` 将位置与线速度的 z 分量清零，
+`spatial_xyz` 保留三维状态；当前生产装配只提供 `ground_vehicle` 执行器。
+
+## 算法与配置
+
+| `CONFIG.algorithm` | 控制方式 | 拓扑与任务 |
+| --- | --- | --- |
+| `bearing` | 向量 PI，积分采用滑动窗口 | 有向 bearing 拓扑，可配置 Leader 参考 |
+| `bearing_projection` | `I - ggᵀ` 投影矩阵反馈，无积分状态 | 使用相同 bearing 拓扑与参考接口 |
+| `subspace` | 固定矩阵权反馈与零空间模态输入 | 无向约束边，可用时间函数或闭环任务 |
+
+两个 bearing planner 共用 `bearing_mode`：默认 `bearing_only` 归一化实际与
+期望相对向量；`bearing_based` 使用包含距离尺度的原始向量。
+世界系 bearing 约束会限定构型方向；绝对平移和尺度不由 bearing-only 单独指定。
+投影矩阵在两种模式下均由实际单位方向构造，不单独提供沿当前边的径向距离控制。
+
+以下为当前配置清单，表中车辆顺序与 `CONFIG.vehicle_ids` 一致。
+所有配置从 `configs/` 导入；`--config` 使用模块名，记录目录前缀使用 `CONFIG.name`。
+
+| 模块名 | 车辆 | 主要内容 |
+| --- | --- | --- |
+| `bearing_leader_motion` | 5 | 单车速度、位置、世界系曲线参考 |
+| `bearing_two` | 3、6 | 两车 +y 方向跟随，car3 为 Leader |
+| `bearing_three` | 3、6、7 | 等腰直角三角形，car3 为 Leader；默认实验 |
+| `bearing_four` | 2、3、6、7 | 正方形；当前 `leader_mask` 全为 False |
+| `bearing_six` | 1–6 | 六车柔性构型，有向矩阵拓扑 |
+| `bearing_eight` | 1–8 | 中间正方形、两侧柔性，car2 为 Leader |
+| `subspace_two_x` | 1、4 | 沿 x 的相对运动自由 |
+| `subspace_two_y` | 1、4 | 沿 y 的相对运动自由 |
+| `subspace_two_xy` | 1、4 | 沿 x=y 的相对运动自由 |
+| `subspace_two_aff` | 1、4 | y 向偏置 0.5 m，沿 x 相对运动自由 |
+| `subspace_triangle` | 3、6、7 | 三车仿射约束三角形 |
+| `subspace_six_triangles` | 1–6 | 两个独立等边三角形 |
+| `subspace_four_rectangle` | 1、4、6、7 | 矩形宽高伸缩与分段平移 |
+| `subspace_four_square` | 1、4、6、7 | 正方形收缩与分段平移 |
+| `subspace_seven` | 1–7 | 正方形、下部伸缩与侧边偏置节点 |
+| `subspace_eight_square_sliders` | 1–8 | 正方形及四个轴向滑臂 |
+| `subspace_pentagon_triangle` | 1–8 | 五边形与三角形的反向移动和同步缩放 |
+| `flyingwing` | 1、2、3、5、6、7、8 | 七车飞翼，时间演示或闭环目标任务 |
+
+四个 `subspace_two_*` 模块的 `CONFIG.name` 均为 `subspace_two`；
+当前不存在 `configs.subspace_two` 模块。Bearing 的有效 Leader 由
+`topology.leader_mask` 选择，`VehicleConfig.role` 标签不能替代此掩码。
+
+Subspace 使用 `A(r-b)=0` 约束相对位移，沿 `ker(A)` 的相对运动自由。
+任务模态必须满足 `L_A Z=0`；固定系数/时间函数与 `task_feedback` 不能混用。
+闭环支持位置、相对位置、边长和投影间距目标，以及 `Sequence`、`Parallel`、
+`Delay`、`Hold`、`Release`。`flyingwing` 默认 `USE_TASK_PROGRAM=False`，
+运行时间演示；闭环示例位于 `task_programs/flyingwing_goals.py`。
 
 ## 关键参数
 
-核心配置定义在 `swarm/domain/config.py`：
+公共配置定义在 [swarm/domain/config.py](swarm/domain/config.py)，
+闭环任务定义在 [swarm/domain/tasks.py](swarm/domain/tasks.py)。
+下面列出公共默认值；实验覆盖值及具体边约束见对应配置文件。
 
-- `ExperimentConfig.algorithm`：选择注册过的编队算法，当前支持 `bearing`。
-- `ExperimentConfig.control_space`：控制状态空间。`planar_xy` 在动捕快照
-  进入 planner 前将 `z/vz` 截断为零；`spatial_xyz` 保留完整三维数据。
-- `ExperimentConfig.leader_target_velocities`：每个 leader 的固定速度或运动
-  参考。
-- `ExperimentConfig.leader_position_pid`：时间位置函数和静态曲线共用的
-  外环位置 PID；最终速度由全局向量上限统一约束。
-- `FormationControlConfig`：bearing 编队控制增益、滑动积分窗口时长
-  `integral_window_s`（默认 1 秒）、积分限幅、输出限幅、
-  角误差滞环死区和 leader bearing 分量开关。
-- `ObstacleAvoidanceConfig`：避障启用开关、车辆半径、影响距离、排斥增益、最小计算距离和车辆间避障开关。
-- `StaticObstacleConfig`：静态圆形障碍物的 ID、世界坐标中心和半径。
-- `GroundVehicleControlConfig`：底盘控制器类型、轨距、物理速度上限、轮速
-  指令范围，以及原差速、车体系投影和麦轮控制器的独立参数。
-- `RuntimeConfig`：控制频率、动捕前缀、UDP 端口、UDP 超时、动捕丢失停车策略和速度上限。
-- `TelemetryConfig`：终端、实时轨迹、记录频率、历史点数和记录目录。
+| 参数 | 公共默认值 | 含义 |
+| --- | --- | --- |
+| `RuntimeConfig.control_hz` | `50.0` Hz | 控制频率 |
+| `command_speed_limit_mps` | `0.30` m/s | 目标速度向量模长上限，不得超过底盘物理上限 |
+| `mocap_prefix` | `/vrpn_client_node` | 动捕话题前缀 |
+| `stop_on_loss_of_mocap` | `True` | 动捕丢失停车 |
+| `udp_port` / `udp_timeout_s` | `12345` / `0.2` s | UDP 端口与 socket 超时 |
+| `duration_s` | `None` | 自动停止时长 |
+| `FormationControlConfig.k_p` / `k_i` | `1.2` / `0.5` | Bearing PI 增益 |
+| `integral_window_s` / `integral_limit` | `2.0` s / `0.4` | 编队积分窗口与逐轴限幅 |
+| `output_limit` / `projection_k_p` | `0.4` / `1.2` | 编队逐轴限幅与投影增益 |
+| `bearing_mode` | `bearing_only` | Bearing 向量处理模式 |
+| `leader_bearing_enabled` | `False` | 在 Leader 运动参考上叠加编队修正 |
+| `bearing_deadband_enabled` | `False` | 角误差滞环死区，进入/退出阈值为 `1.5°` / `3°` |
+| `SubspaceControlConfig.k` | `1.0` | 原始矩阵权反馈增益 |
+| `modes` / `coefficients` / `task_feedback` | `None` / `()` / `None` | 无默认任务输入 |
+| `GroundVehicleControlConfig.controller_type` | `projected` | 可选 `differential`、`projected`、`mecanum` |
+| `track_width_m` / `max_speed_mps` | `0.053` m / `0.3` m/s | 轨距与物理速度上限 |
+| `wheel_command_min` / `wheel_command_max` | `-100` / `100` | 归一化轮速指令范围 |
+| `projected_lookahead_m` / `projected_max_yaw_rate_rps` | `0.06` m / `11.32` rad/s | 投影控制转向参数 |
+| `ObstacleAvoidanceConfig.enabled` / `avoid_other_vehicles` | `False` / `False` | 避障总开关与车间排斥开关 |
+| `vehicle_radius_m` / `influence_distance_m` | `0.03` m / `0.1` m | 车辆半径与排斥影响距离 |
+| `repulsive_gain` / `min_distance_epsilon_m` | `0.0005` / `0.01` m | 排斥增益与最小计算距离 |
+| `TelemetryConfig.console_hz` / `live_plot_hz` / `record_hz` | `10` / `10` / `5` Hz | 终端、绘图与记录频率，默认均启用 |
+| `record_root` / `record_flush_interval_s` | `runs` / `1.0` s | 记录目录与刷新间隔 |
 
-## 底盘控制器切换
+底盘、编队与 Leader 位置环 PID 分开配置；通用 `PIDConfig.integral_window_s`
+默认 1 秒，编队 PI 的公共窗口为 2 秒。位置外环 `output_limit` 为 `None`，
+由合成后的全局向量限速约束。控制器细节、PID 字段和任务参数见
+[控制参考](docs/control_reference.md)。
 
-全局开关位于 `swarm/domain/config.py`：
+人工势场在编队输出后叠加静态圆形障碍物/其他车辆排斥，再限速。
+总开关开启不等同于开启车间避障；各实验的两个开关可能不同。
+当前实现不包含场地路径规划，子空间方向约束也不单独提供碰撞保证。
 
-```python
-GROUND_VEHICLE_CONTROLLER_TYPE = "projected"
-```
+## 数据记录与分析
 
-允许值为 `differential`、`projected` 和 `mecanum`，分别构造原
-`VehicleController`、连续车体系投影 `ProjectedVehicleController` 和
-`MecanumVehicleController`。当前全局默认值为 `projected`；修改全局常量会
-切换所有未单独覆盖 `GroundVehicleControlConfig.controller_type` 的实验。
-最终选择值会随实验配置写入 metadata，非法值会在连接 ROS 和底盘前被拒绝。
+默认输出到 `runs/<CONFIG.name>_<时间戳>/`。目录相对于项目根目录解析：
 
-三个控制器具有相同的 `step(...)`、`reset()` 和 `stop_command()` 接口。
-原差速控制器保持目标朝向加速度 PID 的既有流程。车体系投影控制器把世界系
-目标与实测速度投影为车体纵向和横向分量，并用目标向量模长缩放相对航向
-误差：
+| 文件 | 内容 |
+| --- | --- |
+| `metadata.json` | 配置快照，函数保存为 `module.qualname` |
+| `trajectory.csv` | 实测状态、目标速度、底盘控制量、轮速与发送状态 |
+| `bearing_edges.csv` | 有向 bearing 边的方向与角误差；subspace 运行保留空表头 |
+| `subspace_edges.csv` / `subspace_summary.csv` | Subspace 逐边归一化误差与全局 RMS，按需生成 |
+| `tasks.jsonl` | 闭环任务状态、目标误差与分配残差，按需生成 |
 
-```text
-raw_forward    =  cos(yaw) * target_vx + sin(yaw) * target_vy
-target_lateral = -sin(yaw) * target_vx + cos(yaw) * target_vy
-target_norm    = sqrt(target_vx^2 + target_vy^2)
-heading_error  = atan2(target_lateral, raw_forward)
-target_forward = max(0, raw_forward)
-
-speed_command = max(
-    0,
-    projected_speed_pid(target_forward, measured_forward),
-)
-yaw_rate = target_norm * heading_error / projected_lookahead_m
-
-left_speed  = speed_command - yaw_rate * track_width_m / 2
-right_speed = speed_command + yaw_rate * track_width_m / 2
-```
-
-`target_forward` 和纵向 PID 输出均限制为非负，因此车体不会以负纵向速度
-倒车纠偏。目标位于车尾方向时纵向 PID 复位且直行速度为零，车辆按相对航向
-误差原地转向；目标进入车体前半平面后才恢复前进。`yaw_rate` 使用
-`projected_max_yaw_rate_rps` 限幅；任一轮超过物理速度上限时，左右轮、纵向
-速度和角速度按相同比例缩放。由于角速度同时乘以 `target_norm`，世界系目标
-向量趋零时直行速度和角速度均连续趋零。若实验用于验证无阶跃的渐近过程，
-还应配置
-`FormationControlConfig(bearing_deadband_enabled=False)`，否则 formation
-层的角误差滞环仍会优先输出精确零。
-
-终端每车行中的 `formation=(vx,vy,vz)`、`apf_target=(vx,vy,vz)` 和
-`measured=(vx,vy,vz)` 均为世界坐标系速度。`speed=measured/target` 的两个
-标量在 `projected` 模式下是车体坐标系纵向速度：前者为
-`measured_forward`，后者为 `target_forward`，不是世界系平面速度模长。
-`measured_forward` 可以为负，`target_forward` 始终非负。
-`speed_cmd_mps` 是底盘纵向控制输出，`angle_cmd_rps` 是差速/投影控制器
-用于左右轮差速的角速度命令；麦轮控制器当前令后者为零。终端不输出 APF
-速度增量。
-
-麦轮控制器接收世界坐标系平动目标 `(target_vx, target_vy, target_vz)`，根据
-当前 `yaw` 把目标速度和实测速度转到车体系，并使用两套由
-`mecanum_speed_pid` 构造的独立 PID 控制车体纵向与横向速度。当前接口没有
-目标角速度，因此麦轮模式令目标 `wz=0`，`target_vz` 和 `measured_vz`
-不参与平面底盘控制。
-
-三个控制器的默认速度 PID 相互独立：
-
-```python
-speed_pid = PIDConfig(1.2, 0.0, 0.5, 1.0, 0.3)
-mecanum_speed_pid = PIDConfig(1.5, 0.0, 0.0, 1.0, 0.3)
-projected_speed_pid = PIDConfig(1.0, 0.0, 0.0, 1.0, 0.3)
-```
-
-`PIDConfig.integral_window_s` 设置标量 PID 的滑动积分窗口时长，默认 1 秒；
-积分只包含最近窗口内的误差面积，并继续受 `integral_limit` 约束。
-
-`speed_pid` 只供原差速控制器使用，麦轮纵向和横向 PID 只读取
-`mecanum_speed_pid`，投影控制器的前进纵向环只读取
-`projected_speed_pid`。三组参数都会写入实验 metadata，可分别调节而不影响
-其他底盘控制器。
-
-采用 X 型滚子和 UDP 协议轮序 `<FL,FR,RL,RR>` 时，零目标角速度下的轮缘
-速度分配为：
-
-```text
-FL = vx_body - vy_body
-FR = vx_body + vy_body
-RL = vx_body + vy_body
-RR = vx_body - vy_body
-```
-
-正轮速表示向车体前方滚动。四轮中任一轮超过
-`GroundVehicleControlConfig.max_speed_mps` 时，四轮速度会按同一比例缩放，
-随后映射到 `wheel_command_min` 至 `wheel_command_max`。该协议输出是底盘
-归一化轮速指令，不是带轮半径换算的 `rad/s`。实车启用麦轮模式前应逐轮
-核对下位机轮序、正方向和滚子安装方向。
-
-## 避障
-
-人工势场过滤器位于 `swarm/algorithms/obstacle_avoidance.py`。它接收 planner 输出的目标速度，叠加静态障碍物和其他有效车辆产生的二维排斥速度，再按 `RuntimeConfig.command_speed_limit_mps` 统一限幅。
-
-启用静态障碍物示例：
-
-```python
-from swarm.domain.config import ObstacleAvoidanceConfig, StaticObstacleConfig
-
-CONFIG = ExperimentConfig(
-    algorithm="bearing",
-    # 其余实验参数
-    obstacle_avoidance=ObstacleAvoidanceConfig(enabled=True),
-    static_obstacles=(
-        StaticObstacleConfig("obs1", x=1.0, y=0.5, radius_m=0.15),
-    ),
-)
-```
-
-障碍物坐标使用动捕世界坐标系。当前人工势场实现不包含动态预测、安全状态机、切向力或局部极小值处理，不提供形式化无碰撞保证；实车测试应从低速和空旷场地开始。
-
-## 新增编队算法
-
-`swarm/application/planner_factory.py` 是算法选择入口。新增算法的一般步骤：
-
-1. 在 `swarm/algorithms/` 中实现新的 planner，并满足 `SwarmPlanner.step(snapshot, dt)` 与 `reset()` 接口。
-2. 如需专属参数，在 `swarm/domain/config.py` 增加类型化配置。
-3. 在 `planner_factory.py` 中添加构造函数，并注册到 `_PLANNER_BUILDERS`。
-4. 新增配置文件，例如 `configs/boids_six.py`，保持 `name="boids_six"`、`algorithm="boids"` 与文件名一致。
-5. 增加测试，覆盖命令输出完整性、无效状态、限幅和内部状态重置。
-
-## 实验数据
-
-默认每次记录会在 `runs/<实验名>_<时间戳>/` 下生成：
-
-- `metadata.json`：实验配置和参数快照。
-- `trajectory.csv`：车辆位置、速度、目标速度、执行器控制量、轮速指令和发送状态。
-- `bearing_edges.csv`：每条有向 bearing 边的期望方向、实际方向、有效性和角误差。
-
-Bearing 角误差定义为有向边的三维夹角误差：
-
-```text
-theta_ij = atan2(||g_ij_desired x g_ij_actual||,
-                 g_ij_desired . g_ij_actual)
-```
-
-零长度实际 bearing 没有定义，会记录为无效样本，并从最大值和稳态值计算
-中排除。
-
-后处理命令：
+把以下 `RUN_DIR` 替换为实际运行目录：
 
 ```bash
-python3 tools/postprocess.py runs/<运行目录>
+RUN_DIR="runs/实际运行目录"
+python3 tools/postprocess.py "$RUN_DIR"
+python3 tools/plot_speed_tracking.py "$RUN_DIR"
+python3 tools/plot_constraint_animation.py "$RUN_DIR" --fps 20
+python3 tools/plot_error_animation.py "$RUN_DIR" --fps 20
 ```
 
-默认使用每个误差序列最后 `20%` 的观测帧估计稳态误差。估计值为尾段内
-有效误差的算术平均，稳态容差带默认为估计值的 `±5%`。从实验末帧向前
-搜索连续处于容差带内的记录样本，该终端连续区域定义为稳态区间，其起点
-即 `convergence_time_s`。缺失或无效样本会中断连续区域；若最后一帧无效
-或超出容差带，则该序列不报告稳态区间。
+后处理生成 `analysis.json` 与 `analysis.png`，subspace 另有 `edge_error.png`。
+跟踪工具分别生成逐车速度和航向图片；约束工具生成 `trajectory_constraints.gif`。
+误差动画工具用于 subspace，输出 `analysis.gif` 和 `edge_error.gif`。
+普通轨迹动画及固定场地标注见 [离线分析说明](docs/data_analysis.md)。
 
-`convergence_time_s` 是相对于本次记录首帧的收敛时刻，不是判稳计算耗时。
-`duration_s` 等于实验末帧时间减去 `convergence_time_s`，表示最终连续稳态
-区间覆盖的时间长度；若只有末帧落在容差带内，则样本数为 `1` 且
-`duration_s=0`。
+Bearing 角误差单位为度；后处理全局误差为有向边误差的二范数，不除以边数。
+Subspace 使用谱范数归一化边误差 RMS；非零偏置下误差可大于 1。
+稳态定义、无效样本处理和动画选项见离线分析说明。
 
-尾段比例和相对容差可通过命令行调整：
+## 离线验证与扩展
 
-```bash
-python3 tools/postprocess.py runs/<运行目录> \
-  --steady-tail-percent 20 \
-  --steady-tolerance-percent 5
-```
-
-逐边误差独立使用上述方法。全局误差只在全部观测有向边均存在且有效的
-完整帧上计算：
-
-```text
-global_error = sqrt(edge_1_error^2 + ... + edge_n_error^2)
-```
-
-该二范数不除以边数，然后作为全局标量误差使用同一尾段估计和稳态区间
-搜索方法。
-
-生成产物：
-
-- `analysis.json`（bearing 数值统一使用 `deg`）：
-  - 每辆车的样本数、时长、二维路径长度、最大速度误差和发送成功率；
-  - 全局二范数和每条有向边的全程最大误差；
-  - 尾段稳态估计、收敛时间、稳态区间时长和样本数；
-  - 稳态区间内的平均误差和 RMS；
-  - 期望边数、观测帧数、完整帧数、完整帧率和最大观测间隔。
-  JSON 中 `bearing_global` 位于 `bearing_edges` 之前。
-- `analysis.png`：二维轨迹、全局二范数误差，以及按有向边源车辆拆分的
-  bearing 误差子图。每辆具有出边的车辆对应一张子图，图内包含该车所有
-  `source->target` 边；全局图显示稳态估计、容差带和最终稳态区间，不再
-  绘制速度跟踪曲线。
-
-全流程 bearing 统计只保留最大值；mean 和 RMS 仅用于最终稳态区间。
-后处理不再生成 P95、固定末尾窗口或旧的固定阈值保持时间指标。
-
-逐车生成独立速度和航向跟踪图：
-
-```bash
-python3 tools/plot_speed_tracking.py runs/<运行目录>
-```
-
-默认分别在 `runs/<运行目录>/speed_tracking/` 和
-`runs/<运行目录>/angle_tracking/` 下生成 `car1.png`、`car2.png` 等文件。
-速度图绘制对应车辆的 `target_speed_mps` 和 `measured_speed_mps`；航向图
-将 `target_heading_rad` 和动捕 `yaw_rad` 直接换算为度，不展开 `-π` 到
-`π` 边界处的跳变。不同车辆不会画在同一个 Figure 中，速度与航向也使用
-不同 Figure。可通过
-`--output-directory <目录>` 指定速度图目录，
-`--angle-output-directory <目录>` 指定航向图目录，通过 `--dpi <整数>`
-调整图片分辨率。
-
-## 测试
-
-测试不依赖 ROS 或真实车辆：
+测试无需 ROS、动捕和实车：
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-建议在改动编队算法、避障策略、配置校验、动捕丢失行为、通信重试或控制公式后运行完整测试。
+新增 planner 在 `swarm/algorithms/` 实现 `step(snapshot, dt)` 与 `reset()`，
+通过 `swarm/application/planner_factory.py` 注册，并添加配置与对应测试。
+平台适配通过 `swarm/application/interfaces.py` 的接口接入。
+控制公式、配置约束和扩展步骤见 [控制参考](docs/control_reference.md)。

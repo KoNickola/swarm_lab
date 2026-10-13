@@ -26,10 +26,10 @@ CONFIG = ExperimentConfig(
     algorithm="bearing",
     control_space="planar_xy",
     vehicles=(
-        VehicleConfig("car1", "leader", "ground_vehicle", "10.1.1.81"),
         VehicleConfig("car2", "leader", "ground_vehicle", "10.1.1.82"),
-        VehicleConfig("car3", "follower", "ground_vehicle", "10.1.1.83"),
-        VehicleConfig("car4", "follower", "ground_vehicle", "10.1.1.84"),
+        VehicleConfig("car3", "leader", "ground_vehicle", "10.1.1.83"),
+        VehicleConfig("car6", "follower", "ground_vehicle", "10.1.1.86"),
+        VehicleConfig("car7", "follower", "ground_vehicle", "10.1.1.87"),
     ),
     topology=TopologyConfig(
         adjacency_matrix=(
@@ -64,11 +64,10 @@ CONFIG = ExperimentConfig(
                 (0.0, 0.0, 0.0),
             ),
         ),
-        leader_mask=(True, True, False, False),
+        leader_mask=(False,False, False, False),
     ),
     leader_target_velocities={
-        "car1": (0.0, 0.0, 0.0),
-        "car2": (0.0, 0.0, 0.0),
+       
     },
     obstacle_avoidance=ObstacleAvoidanceConfig(enabled=False),
     static_obstacles=(),

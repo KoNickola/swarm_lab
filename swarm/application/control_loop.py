@@ -64,6 +64,7 @@ class ControlLoop:
         clock: Optional[Clock] = None,
         velocity_filter: Optional[VelocityCommandFilter] = None,
         control_space: str = CONTROL_SPACE_SPATIAL_XYZ,
+        duration_s: Optional[float] = None,
     ) -> None:
         if control_hz <= 0.0:
             raise ValueError("control_hz must be positive")
@@ -84,6 +85,9 @@ class ControlLoop:
         self.clock = clock or SystemClock()
         self.velocity_filter = velocity_filter
         self.control_space = control_space
+        if duration_s is not None and duration_s <= 0.0:
+            raise ValueError("duration_s must be positive when provided")
+        self.duration_s = duration_s
         self.previous_control_time: Optional[float] = None
         self.cycle = 0
 
@@ -112,6 +116,9 @@ class ControlLoop:
         snapshot = self.state_source.get_snapshot()
         snapshot = _project_snapshot(snapshot, self.control_space)
         if self.stop_on_loss_of_mocap and not self.state_source.all_valid():
+            pause_tasks = getattr(self.planner, "pause_tasks", None)
+            if pause_tasks is not None:
+                pause_tasks()
             # The next valid cycle restarts with nominal dt, so time-based
             # references and controller derivatives exclude the outage.
             self.previous_control_time = None
@@ -150,8 +157,14 @@ class ControlLoop:
         """Run until shutdown and always issue final stop commands."""
 
         self.state_source.start()
+        run_started_at = self.clock.monotonic()
         try:
             while not self.shutdown_requested():
+                if (
+                    self.duration_s is not None
+                    and self.clock.monotonic() - run_started_at >= self.duration_s
+                ):
+                    break
                 self.run_cycle()
         except KeyboardInterrupt:
             pass
